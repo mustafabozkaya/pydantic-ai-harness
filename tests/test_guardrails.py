@@ -263,6 +263,21 @@ class TestOutputGuardrail:
         with pytest.raises(OutputBlocked):
             await agent.run('What is my API key?')
 
+    async def test_multiple_output_guardrails(self) -> None:
+        received_a: list[str] = []
+        received_b: list[str] = []
+
+        agent = Agent(
+            TestModel(custom_output_text='hello world'),
+            capabilities=[
+                OutputGuardrail(guard=lambda text: received_a.append(text) or True),  # type: ignore[func-returns-value]
+                OutputGuardrail(guard=lambda text: received_b.append(text) or True),  # type: ignore[func-returns-value]
+            ],
+        )
+        await agent.run('test')
+        assert received_a == ['hello world']
+        assert received_b == ['hello world']
+
     def test_not_serializable(self) -> None:
         """OutputGuardrail should not be spec-serializable (takes a callable)."""
         assert OutputGuardrail.get_serialization_name() is None
@@ -620,6 +635,19 @@ class TestOutputGuardrailWarn:
         )
         with pytest.raises(OutputBlocked):
             await agent.run('Hello')
+
+    async def test_async_context_guard_warn_mode(self, caplog: pytest.LogCaptureFixture) -> None:
+        async def ctx_guard(ctx: RunContext[Any], text: str) -> bool:
+            return False
+
+        agent = Agent(
+            TestModel(custom_output_text='bad output'),
+            capabilities=[OutputGuardrail(context_guard=ctx_guard, on_fail='warn')],
+        )
+        with caplog.at_level(logging.WARNING, logger='pydantic_harness.guardrails'):
+            result = await agent.run('Hello')
+        assert result.output == 'bad output'
+        assert 'Output blocked by guardrail' in caplog.text
 
     def test_no_guard_raises_value_error(self) -> None:
         """Neither guard nor context_guard should raise ValueError."""
