@@ -21,8 +21,12 @@ Implements a `Memory` capability (`AbstractCapability` subclass) that provides p
 
 ### Memory Model
 
-- **`MemoryEntry`** dataclass: `key`, `content`, `tags` (list[str]), `created_at`, `updated_at`
-- Search is substring-based (case-insensitive) across key, content, and tags
+- **`MemoryEntry`** dataclass: `key`, `content`, `tags` (list[str]), `scope`, `expires_at`, `created_at`, `updated_at`
+- **`MemoryEntryDict`** TypedDict for serialization
+- Word-boundary search with relevance scoring (case-insensitive) across key, content, and tags
+- Scoping/namespaces via `scope` field with filtering on search/list
+- TTL/expiration via `expires_at` with `is_expired()` auto-filtering
+- Dedup warning on save when keys are similar (Levenshtein distance <= 2)
 
 ### Spec Serialization
 
@@ -41,11 +45,10 @@ Implements a `Memory` capability (`AbstractCapability` subclass) that provides p
 
 - `src/pydantic_harness/memory.py` - Capability, stores, entry model
 - `src/pydantic_harness/__init__.py` - Re-exports
-- `tests/test_memory.py` - 48 tests covering all code paths
+- `tests/test_memory.py` - 113 tests covering all code paths
 
 ## Future Work
 
 - Semantic/vector search backend (e.g. embedding-based `MemoryStore`)
-- TTL / expiration on entries
 - Session-scoped memory isolation via `for_run()`
 - SQLite / Redis backends for production persistence
