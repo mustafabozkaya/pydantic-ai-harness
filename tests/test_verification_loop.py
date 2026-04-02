@@ -15,6 +15,12 @@ from pydantic_harness.verification_loop import (
     Verifier,
 )
 
+
+@pytest.fixture(params=['asyncio'])
+def anyio_backend(request: pytest.FixtureRequest) -> str:
+    return request.param  # type: ignore[no-any-return]
+
+
 # ---------------------------------------------------------------------------
 # Unit tests for helpers
 # ---------------------------------------------------------------------------
