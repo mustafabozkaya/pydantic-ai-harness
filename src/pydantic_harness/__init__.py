@@ -7,4 +7,11 @@ Usage:
 # Each capability module is imported and re-exported here.
 # Capabilities are listed alphabetically.
 
-__all__: list[str] = []
+from pydantic_harness.system_reminders import AsyncDynamicReminder, DynamicReminder, Reminder, SystemReminders
+
+__all__: list[str] = [
+    'AsyncDynamicReminder',
+    'DynamicReminder',
+    'Reminder',
+    'SystemReminders',
+]
