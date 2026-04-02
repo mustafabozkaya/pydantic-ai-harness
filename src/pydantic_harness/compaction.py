@@ -9,7 +9,7 @@ Provides three capabilities for controlling conversation history size:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -39,43 +39,56 @@ _CHARS_PER_TOKEN = 4
 """Rough approximation: ~4 characters per token on average."""
 
 
-def estimate_token_count(messages: Sequence[ModelMessage]) -> int:
-    """Approximate token count for a sequence of messages.
-
-    Uses a simple heuristic of ~4 characters per token. For production use
-    with tight thresholds, consider a proper tokenizer (e.g. ``tiktoken``).
-    """
-    total_chars = 0
+def _collect_text(messages: Sequence[ModelMessage]) -> list[str]:
+    """Collect all text segments from a sequence of messages."""
+    segments: list[str] = []
     for msg in messages:
         if isinstance(msg, ModelRequest):
             for part in msg.parts:
                 if isinstance(part, UserPromptPart):
-                    total_chars += _user_prompt_chars(part)
+                    segments.append(_user_prompt_text_for_counting(part))
                 elif isinstance(part, SystemPromptPart):
-                    total_chars += len(part.content)
+                    segments.append(part.content)
                 elif isinstance(part, ToolReturnPart):
-                    total_chars += len(str(part.content))
+                    segments.append(str(part.content))
         else:
             for part in msg.parts:
                 if isinstance(part, TextPart):
-                    total_chars += len(part.content)
+                    segments.append(part.content)
                 elif isinstance(part, ToolCallPart):
-                    total_chars += len(part.tool_name)
-                    total_chars += len(str(part.args))
-    return total_chars // _CHARS_PER_TOKEN
+                    segments.append(part.tool_name)
+                    segments.append(str(part.args))
+    return segments
 
 
-def _user_prompt_chars(part: UserPromptPart) -> int:
-    """Count characters in a user prompt part."""
+def _user_prompt_text_for_counting(part: UserPromptPart) -> str:
+    """Extract text content from a user prompt part for counting."""
     if isinstance(part.content, str):
-        return len(part.content)
-    total = 0
+        return part.content
+    texts: list[str] = []
     for item in part.content:
         if isinstance(item, str):
-            total += len(item)
+            texts.append(item)
         elif isinstance(item, TextContent):
-            total += len(item.content)
-    return total
+            texts.append(item.content)
+    return ''.join(texts)
+
+
+def estimate_token_count(
+    messages: Sequence[ModelMessage],
+    tokenizer: Callable[[str], int] | None = None,
+) -> int:
+    """Approximate token count for a sequence of messages.
+
+    Args:
+        messages: Messages to count tokens for.
+        tokenizer: Optional callable that returns the token count for a string.
+            When ``None``, falls back to a ~4 characters-per-token heuristic.
+    """
+    segments = _collect_text(messages)
+    if tokenizer is not None:
+        return sum(tokenizer(s) for s in segments)
+    return sum(len(s) for s in segments) // _CHARS_PER_TOKEN
 
 
 # ---------------------------------------------------------------------------
@@ -150,12 +163,13 @@ def _find_safe_cutoff(messages: list[ModelMessage], keep: int) -> int:
 def _find_token_cutoff(
     messages: list[ModelMessage],
     target_tokens: int,
+    tokenizer: Callable[[str], int] | None = None,
 ) -> int:
     """Binary-search for a cutoff such that ``messages[cutoff:]`` fits in *target_tokens*.
 
     Adjusts the result so that no tool-call pairs are orphaned.
     """
-    if not messages or estimate_token_count(messages) <= target_tokens:
+    if not messages or estimate_token_count(messages, tokenizer) <= target_tokens:
         return 0
 
     lo, hi = 0, len(messages)
@@ -163,7 +177,7 @@ def _find_token_cutoff(
 
     while lo < hi:
         mid = (lo + hi) // 2
-        if estimate_token_count(messages[mid:]) <= target_tokens:
+        if estimate_token_count(messages[mid:], tokenizer) <= target_tokens:
             candidate = mid
             hi = mid
         else:
@@ -177,6 +191,39 @@ def _find_token_cutoff(
         if _is_safe_cutoff(messages, idx):
             return idx
     return 0  # pragma: no cover
+
+
+# ---------------------------------------------------------------------------
+# First user message preservation
+# ---------------------------------------------------------------------------
+
+
+def _find_first_user_message(messages: list[ModelMessage]) -> ModelRequest | None:
+    """Return the first ``ModelRequest`` that contains a ``UserPromptPart``, or ``None``."""
+    for msg in messages:
+        if isinstance(msg, ModelRequest) and any(isinstance(p, UserPromptPart) for p in msg.parts):
+            return msg
+    return None
+
+
+def _prepend_first_user_message(
+    original: list[ModelMessage],
+    cutoff: int,
+    trimmed: list[ModelMessage],
+) -> list[ModelMessage]:
+    """Ensure the first user message from *original* appears in *trimmed*.
+
+    If the first ``ModelRequest`` containing a ``UserPromptPart`` in *original*
+    was discarded (its index is before *cutoff*) and is not already in *trimmed*,
+    prepend it.
+    """
+    first = _find_first_user_message(original)
+    if first is None:
+        return trimmed
+    idx = original.index(first)
+    if idx < cutoff and first not in trimmed:
+        return [first, *trimmed]
+    return trimmed
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +269,18 @@ class SlidingWindow(AbstractCapability[AgentDepsT]):
     When ``None``, falls back to ``keep_messages``.
     """
 
+    tokenizer: Callable[[str], int] | None = None
+    """Optional tokenizer for accurate token counting.
+
+    A callable that returns the token count for a given string.
+    When ``None``, uses a ~4 characters-per-token heuristic.
+    """
+
+    preserve_first_user_message: bool = True
+    """When ``True``, the first ``ModelRequest`` containing a ``UserPromptPart``
+    is always kept after trimming, in addition to system prompts.
+    """
+
     def __post_init__(self) -> None:  # noqa: D105
         if self.max_messages is None and self.max_tokens is None:
             raise ValueError('At least one of max_messages or max_tokens must be set.')
@@ -246,19 +305,22 @@ class SlidingWindow(AbstractCapability[AgentDepsT]):
         if self.max_messages is not None and len(messages) > self.max_messages:
             triggered = True
         if not triggered and self.max_tokens is not None:
-            if estimate_token_count(messages) > self.max_tokens:
+            if estimate_token_count(messages, self.tokenizer) > self.max_tokens:
                 triggered = True
 
         if not triggered:
             return request_context
 
         if self.keep_tokens is not None:
-            cutoff = _find_token_cutoff(messages, self.keep_tokens)
+            cutoff = _find_token_cutoff(messages, self.keep_tokens, self.tokenizer)
         else:
             cutoff = _find_safe_cutoff(messages, self.keep_messages)
 
         if cutoff > 0:
-            request_context.messages = messages[cutoff:]
+            trimmed = messages[cutoff:]
+            if self.preserve_first_user_message:
+                trimmed = _prepend_first_user_message(messages, cutoff, trimmed)
+            request_context.messages = trimmed
 
         return request_context
 
@@ -543,6 +605,21 @@ def _extract_system_prompts(messages: list[ModelMessage]) -> list[SystemPromptPa
     return parts
 
 
+def _extract_previous_summary(messages: list[ModelMessage]) -> str | None:
+    """Extract the most recent compaction summary from the message history.
+
+    Looks for a ``SystemPromptPart`` whose content starts with the summary prefix,
+    which indicates it was produced by a prior compaction pass.
+    """
+    for msg in messages:
+        if not isinstance(msg, ModelRequest):
+            continue
+        for part in msg.parts:
+            if isinstance(part, SystemPromptPart) and part.content.startswith(_SUMMARY_PREFIX):
+                return part.content[len(_SUMMARY_PREFIX) :]
+    return None
+
+
 @dataclass
 class Compaction(AbstractCapability[AgentDepsT]):
     """LLM-powered conversation compaction.
@@ -591,6 +668,23 @@ class Compaction(AbstractCapability[AgentDepsT]):
     Must contain a ``{messages}`` placeholder.
     """
 
+    tokenizer: Callable[[str], int] | None = None
+    """Optional tokenizer for accurate token counting.
+
+    A callable that returns the token count for a given string.
+    When ``None``, uses a ~4 characters-per-token heuristic.
+    """
+
+    preserve_first_user_message: bool = True
+    """When ``True``, the first ``ModelRequest`` containing a ``UserPromptPart``
+    is always kept after compaction, in addition to system prompts.
+    """
+
+    incremental: bool = True
+    """When ``True``, include any existing summary from a prior compaction in the
+    summarization prompt so that it is extended rather than regenerated from scratch.
+    """
+
     def __post_init__(self) -> None:  # noqa: D105
         if self.max_messages is None and self.max_tokens is None:
             raise ValueError('At least one of max_messages or max_tokens must be set.')
@@ -615,14 +709,14 @@ class Compaction(AbstractCapability[AgentDepsT]):
         if self.max_messages is not None and len(messages) > self.max_messages:
             triggered = True
         if not triggered and self.max_tokens is not None:
-            if estimate_token_count(messages) > self.max_tokens:
+            if estimate_token_count(messages, self.tokenizer) > self.max_tokens:
                 triggered = True
 
         if not triggered:
             return request_context
 
         if self.keep_tokens is not None:
-            cutoff = _find_token_cutoff(messages, self.keep_tokens)
+            cutoff = _find_token_cutoff(messages, self.keep_tokens, self.tokenizer)
         else:
             cutoff = _find_safe_cutoff(messages, self.keep_messages)
 
@@ -633,19 +727,37 @@ class Compaction(AbstractCapability[AgentDepsT]):
         to_summarize = messages[:cutoff]
         preserved = messages[cutoff:]
 
-        summary = await self._summarize(to_summarize)
+        previous_summary = _extract_previous_summary(messages) if self.incremental else None
+        summary = await self._summarize(to_summarize, previous_summary=previous_summary)
 
         summary_part = SystemPromptPart(content=f'{_SUMMARY_PREFIX}{summary}')
         summary_message = ModelRequest(parts=[*system_parts, summary_part])
-        request_context.messages = [summary_message, *preserved]
+
+        first_user: list[ModelMessage] = []
+        if self.preserve_first_user_message:
+            first_user_msg = _find_first_user_message(messages)
+            if first_user_msg is not None:
+                idx = messages.index(first_user_msg)
+                if idx < cutoff and first_user_msg not in preserved:
+                    first_user = [first_user_msg]
+
+        request_context.messages = [summary_message, *first_user, *preserved]
         return request_context
 
-    async def _summarize(self, messages: list[ModelMessage]) -> str:
+    async def _summarize(
+        self,
+        messages: list[ModelMessage],
+        *,
+        previous_summary: str | None = None,
+    ) -> str:
         """Generate a summary for the given messages using the configured model."""
         from pydantic_ai import Agent
 
         formatted = _format_messages(messages)
         prompt = self.summary_prompt.format(messages=formatted)
+
+        if previous_summary is not None:
+            prompt = f'{prompt}\n\n<previous_summary>\n{previous_summary}\n</previous_summary>'
 
         agent: Agent[None, str] = Agent(
             self.model,

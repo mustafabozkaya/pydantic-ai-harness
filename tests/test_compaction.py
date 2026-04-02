@@ -21,10 +21,13 @@ from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
 from pydantic_ai.usage import RunUsage
 
 from pydantic_harness.compaction import (
+    _SUMMARY_PREFIX,
     Compaction,
     LimitWarner,
     SlidingWindow,
+    _extract_previous_summary,
     _extract_system_prompts,
+    _find_first_user_message,
     _find_safe_cutoff,
     _find_token_cutoff,
     _format_messages,
@@ -257,7 +260,7 @@ class TestSlidingWindow:
 
     @pytest.mark.anyio
     async def test_trims_when_above_message_threshold(self):
-        sw = SlidingWindow(max_messages=5, keep_messages=3)
+        sw = SlidingWindow(max_messages=5, keep_messages=3, preserve_first_user_message=False)
         messages: list[ModelMessage] = [_user(f'msg-{i}') for i in range(8)]
         rc = _make_request_context(messages)
         ctx = _make_ctx()
@@ -304,7 +307,7 @@ class TestSlidingWindow:
 
     @pytest.mark.anyio
     async def test_keep_tokens_mode(self):
-        sw = SlidingWindow(max_messages=3, keep_tokens=10)
+        sw = SlidingWindow(max_messages=3, keep_tokens=10, preserve_first_user_message=False)
         # Each message = 20 chars = 5 tokens.  Total = 50 tokens.
         messages: list[ModelMessage] = [_user('x' * 20) for _ in range(10)]
         rc = _make_request_context(messages)
@@ -476,7 +479,7 @@ class TestCompaction:
 
     @pytest.mark.anyio
     async def test_compaction_replaces_old_messages(self):
-        comp = Compaction(model='test:m', max_messages=3, keep_messages=1)
+        comp = Compaction(model='test:m', max_messages=3, keep_messages=1, preserve_first_user_message=False)
         messages: list[ModelMessage] = [
             _user('first'),
             _assistant('response 1'),
@@ -700,7 +703,7 @@ class TestExports:
 
 
 class TestUserPromptMultiModal:
-    """Cover _user_prompt_chars and _user_prompt_text for non-string UserContent."""
+    """Cover _user_prompt_text_for_counting and _user_prompt_text for non-string UserContent."""
 
     def test_estimate_with_text_content_parts(self):
         from pydantic_ai.messages import TextContent
@@ -914,3 +917,437 @@ class TestLimitWarnerTotalTokensBelowThreshold:
         ctx = _make_ctx(input_tokens=10, output_tokens=10)  # 20 total, 2% of 1000.
         result = await lw.before_model_request(ctx, rc)
         assert len(result.messages) == 1  # No warning.
+
+
+# ---------------------------------------------------------------------------
+# Tokenizer parameter
+# ---------------------------------------------------------------------------
+
+
+class TestTokenizerParameter:
+    """Tests for the optional tokenizer parameter on estimate_token_count,
+    SlidingWindow, and Compaction."""
+
+    def test_estimate_token_count_with_tokenizer(self):
+        """Custom tokenizer should override the heuristic."""
+        msgs: list[ModelMessage] = [_user('hello world')]
+        # Heuristic: 11 chars / 4 = 2 tokens.
+        assert estimate_token_count(msgs) == 2
+        # Custom tokenizer: count words instead.
+        assert estimate_token_count(msgs, tokenizer=lambda s: len(s.split())) == 2
+
+    def test_estimate_token_count_tokenizer_called_per_segment(self):
+        """Tokenizer is called once per text segment, results are summed."""
+        calls: list[str] = []
+
+        def tracking_tokenizer(s: str) -> int:
+            calls.append(s)
+            return 10
+
+        msgs: list[ModelMessage] = [_user('a'), _assistant('b')]
+        result = estimate_token_count(msgs, tokenizer=tracking_tokenizer)
+        assert result == 20
+        assert len(calls) == 2
+
+    @pytest.mark.anyio
+    async def test_sliding_window_with_tokenizer(self):
+        """SlidingWindow should use the tokenizer for token-based triggers."""
+        # Custom tokenizer: 1 token per character.
+        sw = SlidingWindow(
+            max_tokens=10,
+            keep_tokens=5,
+            tokenizer=lambda s: len(s),
+            preserve_first_user_message=False,
+        )
+        # Each message has 4 chars = 4 tokens with this tokenizer. 5 messages = 20 tokens.
+        messages: list[ModelMessage] = [_user('abcd') for _ in range(5)]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+        result = await sw.before_model_request(ctx, rc)
+        # With keep_tokens=5 and 4 tokens per message, should keep 1 message.
+        remaining_tokens = estimate_token_count(result.messages, tokenizer=lambda s: len(s))
+        assert remaining_tokens <= 5
+
+    @pytest.mark.anyio
+    async def test_sliding_window_tokenizer_threshold_check(self):
+        """SlidingWindow tokenizer should be used for the trigger check."""
+        # Tokenizer that inflates counts: 100 tokens per char.
+        sw = SlidingWindow(
+            max_tokens=50,
+            keep_messages=1,
+            tokenizer=lambda s: len(s) * 100,
+            preserve_first_user_message=False,
+        )
+        # 2 chars * 100 = 200 tokens per message. Only 1 message but still > 50.
+        messages: list[ModelMessage] = [_user('ab'), _user('cd')]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+        result = await sw.before_model_request(ctx, rc)
+        assert len(result.messages) == 1
+
+    @pytest.mark.anyio
+    async def test_compaction_with_tokenizer(self):
+        """Compaction should use the tokenizer for token-based triggers."""
+        # Tokenizer: 1 token per char.
+        comp = Compaction(
+            model='test:m',
+            max_tokens=10,
+            keep_messages=1,
+            tokenizer=lambda s: len(s),
+            preserve_first_user_message=False,
+            incremental=False,
+        )
+        # Each message: 'abcde' = 5 chars = 5 tokens. 4 messages = 20 tokens > 10.
+        messages: list[ModelMessage] = [_user('abcde') for _ in range(4)]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+
+        mock_result = AsyncMock()
+        mock_result.output = 'Token summary.'
+
+        with patch('pydantic_ai.Agent') as MockAgent:
+            mock_agent_instance = AsyncMock()
+            mock_agent_instance.run.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            result = await comp.before_model_request(ctx, rc)
+
+        # Should have triggered compaction.
+        assert len(result.messages) >= 1
+        first_msg = result.messages[0]
+        assert isinstance(first_msg, ModelRequest)
+        sys_parts = [p for p in first_msg.parts if isinstance(p, SystemPromptPart)]
+        assert any('Token summary.' in p.content for p in sys_parts)
+
+    def test_find_token_cutoff_with_tokenizer(self):
+        """_find_token_cutoff should use the tokenizer."""
+        messages: list[ModelMessage] = [_user('abcde') for _ in range(10)]
+        # Tokenizer: 1 token per char. Each message = 5 tokens.
+        cutoff = _find_token_cutoff(messages, 15, tokenizer=lambda s: len(s))
+        remaining = messages[cutoff:]
+        assert estimate_token_count(remaining, tokenizer=lambda s: len(s)) <= 15
+
+
+# ---------------------------------------------------------------------------
+# Preserve first user message
+# ---------------------------------------------------------------------------
+
+
+class TestPreserveFirstUserMessage:
+    """Tests for the preserve_first_user_message parameter."""
+
+    def test_find_first_user_message_found(self):
+        msgs: list[ModelMessage] = [
+            ModelRequest(parts=[SystemPromptPart(content='sys')]),
+            _user('first'),
+            _user('second'),
+        ]
+        result = _find_first_user_message(msgs)
+        assert result is not None
+        assert isinstance(result.parts[0], UserPromptPart)
+        assert result.parts[0].content == 'first'
+
+    def test_find_first_user_message_none(self):
+        msgs: list[ModelMessage] = [
+            ModelRequest(parts=[SystemPromptPart(content='sys')]),
+            _assistant('hello'),
+        ]
+        assert _find_first_user_message(msgs) is None
+
+    @pytest.mark.anyio
+    async def test_sliding_window_preserves_first_user(self):
+        sw = SlidingWindow(max_messages=3, keep_messages=2, preserve_first_user_message=True)
+        messages: list[ModelMessage] = [
+            _user('original task'),
+            _assistant('got it'),
+            _user('follow-up 1'),
+            _assistant('done'),
+            _user('follow-up 2'),
+        ]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+        result = await sw.before_model_request(ctx, rc)
+        # The first user message ('original task') should be preserved even though
+        # it was outside the keep window.
+        user_contents: list[str] = []
+        for msg in result.messages:
+            if isinstance(msg, ModelRequest):
+                for part in msg.parts:
+                    if isinstance(part, UserPromptPart) and isinstance(part.content, str):
+                        user_contents.append(part.content)
+        assert 'original task' in user_contents
+
+    @pytest.mark.anyio
+    async def test_sliding_window_no_duplicate_when_in_window(self):
+        """First user message should not be duplicated if already in the kept window."""
+        sw = SlidingWindow(max_messages=3, keep_messages=5, preserve_first_user_message=True)
+        messages: list[ModelMessage] = [
+            _user('task'),
+            _assistant('ok'),
+            _user('more'),
+            _assistant('done'),
+        ]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+        result = await sw.before_model_request(ctx, rc)
+        assert len(result.messages) == 4  # Not triggered since 4 < 5 keep.
+
+    @pytest.mark.anyio
+    async def test_sliding_window_disabled_preserve(self):
+        """When preserve_first_user_message=False, first user message is not kept."""
+        sw = SlidingWindow(max_messages=3, keep_messages=1, preserve_first_user_message=False)
+        messages: list[ModelMessage] = [
+            _user('original'),
+            _assistant('a'),
+            _user('b'),
+            _assistant('c'),
+            _user('last'),
+        ]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+        result = await sw.before_model_request(ctx, rc)
+        assert len(result.messages) == 1
+        user_contents: list[str] = []
+        for msg in result.messages:
+            if isinstance(msg, ModelRequest):
+                for part in msg.parts:
+                    if isinstance(part, UserPromptPart) and isinstance(part.content, str):
+                        user_contents.append(part.content)
+        assert 'original' not in user_contents
+
+    @pytest.mark.anyio
+    async def test_compaction_preserves_first_user(self):
+        comp = Compaction(model='test:m', max_messages=3, keep_messages=1, preserve_first_user_message=True)
+        messages: list[ModelMessage] = [
+            _user('build a web app'),
+            _assistant('response 1'),
+            _user('second'),
+            _assistant('response 2'),
+            _user('third'),
+        ]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+
+        mock_result = AsyncMock()
+        mock_result.output = 'Summary.'
+
+        with patch('pydantic_ai.Agent') as MockAgent:
+            mock_agent_instance = AsyncMock()
+            mock_agent_instance.run.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            result = await comp.before_model_request(ctx, rc)
+
+        # Summary message + first user message + 1 kept = 3.
+        assert len(result.messages) == 3
+        # First message is the summary (with system prompts).
+        assert isinstance(result.messages[0], ModelRequest)
+        sys_parts = [p for p in result.messages[0].parts if isinstance(p, SystemPromptPart)]
+        assert any('Summary.' in p.content for p in sys_parts)
+        # Second message is the preserved first user message.
+        assert isinstance(result.messages[1], ModelRequest)
+        user_parts = [p for p in result.messages[1].parts if isinstance(p, UserPromptPart)]
+        assert len(user_parts) == 1
+        assert user_parts[0].content == 'build a web app'
+
+    @pytest.mark.anyio
+    async def test_compaction_no_duplicate_first_user_when_in_window(self):
+        """First user message already in kept window should not be duplicated."""
+        comp = Compaction(model='test:m', max_messages=3, keep_messages=5, preserve_first_user_message=True)
+        messages: list[ModelMessage] = [
+            _user('task'),
+            _assistant('ok'),
+            _user('more'),
+            _assistant('done'),
+        ]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+        result = await comp.before_model_request(ctx, rc)
+        # Not triggered since keep_messages > len(messages).
+        assert len(result.messages) == 4
+
+    @pytest.mark.anyio
+    async def test_sliding_window_no_user_messages(self):
+        """When there are no user messages, preservation is a no-op."""
+        sw = SlidingWindow(max_messages=2, keep_messages=1, preserve_first_user_message=True)
+        messages: list[ModelMessage] = [
+            _assistant('a'),
+            _assistant('b'),
+            _assistant('c'),
+        ]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+        result = await sw.before_model_request(ctx, rc)
+        assert len(result.messages) == 1
+
+
+# ---------------------------------------------------------------------------
+# Incremental summarization
+# ---------------------------------------------------------------------------
+
+
+class TestIncrementalSummarization:
+    """Tests for the incremental parameter on Compaction."""
+
+    def test_extract_previous_summary_found(self):
+        msgs: list[ModelMessage] = [
+            ModelRequest(parts=[SystemPromptPart(content=f'{_SUMMARY_PREFIX}Old summary text.')]),
+            _user('hi'),
+        ]
+        assert _extract_previous_summary(msgs) == 'Old summary text.'
+
+    def test_extract_previous_summary_not_found(self):
+        msgs: list[ModelMessage] = [
+            ModelRequest(parts=[SystemPromptPart(content='Regular system prompt.')]),
+            _user('hi'),
+        ]
+        assert _extract_previous_summary(msgs) is None
+
+    def test_extract_previous_summary_empty_messages(self):
+        assert _extract_previous_summary([]) is None
+
+    def test_extract_previous_summary_skips_non_requests(self):
+        msgs: list[ModelMessage] = [
+            _assistant('hi'),
+            _user('hello'),
+        ]
+        assert _extract_previous_summary(msgs) is None
+
+    @pytest.mark.anyio
+    async def test_incremental_includes_previous_summary(self):
+        """When incremental=True and a prior summary exists, it should be included in the prompt."""
+        comp = Compaction(
+            model='test:m',
+            max_messages=3,
+            keep_messages=1,
+            incremental=True,
+            preserve_first_user_message=False,
+        )
+        # Simulate a conversation that already has a summary from prior compaction.
+        messages: list[ModelMessage] = [
+            ModelRequest(parts=[SystemPromptPart(content=f'{_SUMMARY_PREFIX}Previous context here.')]),
+            _user('new input 1'),
+            _assistant('response 1'),
+            _user('new input 2'),
+            _assistant('response 2'),
+        ]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+
+        mock_result = AsyncMock()
+        mock_result.output = 'Extended summary.'
+
+        with patch('pydantic_ai.Agent') as MockAgent:
+            mock_agent_instance = AsyncMock()
+            mock_agent_instance.run.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await comp.before_model_request(ctx, rc)
+
+        # Verify the summarization prompt included the previous summary.
+        call_args = mock_agent_instance.run.call_args
+        prompt_text = call_args[0][0]
+        assert '<previous_summary>' in prompt_text
+        assert 'Previous context here.' in prompt_text
+
+    @pytest.mark.anyio
+    async def test_incremental_no_previous_summary(self):
+        """When incremental=True but no prior summary exists, prompt should be plain."""
+        comp = Compaction(
+            model='test:m',
+            max_messages=3,
+            keep_messages=1,
+            incremental=True,
+            preserve_first_user_message=False,
+        )
+        messages: list[ModelMessage] = [
+            _user('first'),
+            _assistant('response 1'),
+            _user('second'),
+            _assistant('response 2'),
+        ]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+
+        mock_result = AsyncMock()
+        mock_result.output = 'Fresh summary.'
+
+        with patch('pydantic_ai.Agent') as MockAgent:
+            mock_agent_instance = AsyncMock()
+            mock_agent_instance.run.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await comp.before_model_request(ctx, rc)
+
+        call_args = mock_agent_instance.run.call_args
+        prompt_text = call_args[0][0]
+        assert '<previous_summary>' not in prompt_text
+
+    @pytest.mark.anyio
+    async def test_incremental_disabled(self):
+        """When incremental=False, the previous summary should not be included."""
+        comp = Compaction(
+            model='test:m',
+            max_messages=3,
+            keep_messages=1,
+            incremental=False,
+            preserve_first_user_message=False,
+        )
+        messages: list[ModelMessage] = [
+            ModelRequest(parts=[SystemPromptPart(content=f'{_SUMMARY_PREFIX}Old summary.')]),
+            _user('new input'),
+            _assistant('response'),
+            _user('another'),
+            _assistant('another response'),
+        ]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+
+        mock_result = AsyncMock()
+        mock_result.output = 'Regenerated summary.'
+
+        with patch('pydantic_ai.Agent') as MockAgent:
+            mock_agent_instance = AsyncMock()
+            mock_agent_instance.run.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await comp.before_model_request(ctx, rc)
+
+        call_args = mock_agent_instance.run.call_args
+        prompt_text = call_args[0][0]
+        assert '<previous_summary>' not in prompt_text
+
+    @pytest.mark.anyio
+    async def test_incremental_output_contains_summary(self):
+        """The output after incremental compaction should contain the new summary."""
+        comp = Compaction(
+            model='test:m',
+            max_messages=3,
+            keep_messages=1,
+            incremental=True,
+            preserve_first_user_message=False,
+        )
+        messages: list[ModelMessage] = [
+            ModelRequest(parts=[SystemPromptPart(content=f'{_SUMMARY_PREFIX}Old context.')]),
+            _user('a'),
+            _assistant('b'),
+            _user('c'),
+            _assistant('d'),
+        ]
+        rc = _make_request_context(messages)
+        ctx = _make_ctx()
+
+        mock_result = AsyncMock()
+        mock_result.output = 'Extended context summary.'
+
+        with patch('pydantic_ai.Agent') as MockAgent:
+            mock_agent_instance = AsyncMock()
+            mock_agent_instance.run.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            result = await comp.before_model_request(ctx, rc)
+
+        first_msg = result.messages[0]
+        assert isinstance(first_msg, ModelRequest)
+        sys_parts = [p for p in first_msg.parts if isinstance(p, SystemPromptPart)]
+        assert any('Extended context summary.' in p.content for p in sys_parts)
