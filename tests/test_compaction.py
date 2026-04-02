@@ -288,14 +288,14 @@ class TestSlidingWindow:
         result = await sw.before_model_request(ctx, rc)
         # Should not split the tool pair.
         remaining = result.messages
-        call_ids = set()
-        return_ids = set()
+        call_ids: set[str] = set()
+        return_ids: set[str] = set()
         for msg in remaining:
             if isinstance(msg, ModelResponse):
                 for part in msg.parts:
                     if isinstance(part, ToolCallPart) and part.tool_call_id:
                         call_ids.add(part.tool_call_id)
-            elif isinstance(msg, ModelRequest):
+            else:
                 for part in msg.parts:
                     if isinstance(part, ToolReturnPart):
                         return_ids.add(part.tool_call_id)
@@ -560,14 +560,14 @@ class TestCompaction:
 
         # Tool pairs in remaining messages should be intact.
         remaining = result.messages
-        call_ids = set()
-        return_ids = set()
+        call_ids: set[str] = set()
+        return_ids: set[str] = set()
         for msg in remaining:
             if isinstance(msg, ModelResponse):
                 for part in msg.parts:
                     if isinstance(part, ToolCallPart) and part.tool_call_id:
                         call_ids.add(part.tool_call_id)
-            elif isinstance(msg, ModelRequest):
+            else:
                 for part in msg.parts:
                     if isinstance(part, ToolReturnPart):
                         return_ids.add(part.tool_call_id)
