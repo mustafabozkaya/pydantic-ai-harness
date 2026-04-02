@@ -20,8 +20,10 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from pydantic_harness.tool_orphan_repair import ToolOrphanRepair
-from pydantic_harness.tool_orphan_repair import _repair_messages  # pyright: ignore[reportPrivateUsage]
+from pydantic_harness.tool_orphan_repair import (
+    ToolOrphanRepair,
+    _repair_messages,  # pyright: ignore[reportPrivateUsage]
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
