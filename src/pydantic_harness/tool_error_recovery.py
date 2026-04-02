@@ -39,6 +39,7 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Any
 
+import anyio
 from pydantic_ai.capabilities.abstract import AbstractCapability, ValidatedToolArgs, WrapToolExecuteHandler
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import RunContext, ToolDefinition
@@ -48,7 +49,12 @@ from pydantic_ai.tools import RunContext, ToolDefinition
 # ---------------------------------------------------------------------------
 
 InformStrategy = str  # Literal['inform'], but we use str for 3.10 compat
-RetryStrategy = tuple[str, int]  # ('retry', max_retries)
+RetryStrategy = tuple[str, int] | tuple[str, int, float, tuple[type[Exception], ...]]
+"""A retry strategy tuple.
+
+Short form: ``('retry', max_retries)``
+Full form: ``('retry', max_retries, retry_delay, retryable_exceptions)``
+"""
 FallbackStrategy = tuple[str, Any]  # ('fallback', value)
 
 Strategy = InformStrategy | RetryStrategy | FallbackStrategy
@@ -56,6 +62,7 @@ Strategy = InformStrategy | RetryStrategy | FallbackStrategy
 
 - ``'inform'``: Return the error message to the model.
 - ``('retry', N)``: Retry up to *N* times, then fall back to ``inform``.
+- ``('retry', N, delay, exceptions)``: Retry with exponential backoff and exception filter.
 - ``('fallback', value)``: Return *value* on error.
 """
 
@@ -71,17 +78,34 @@ def _validate_strategy(strategy: Strategy, label: str = 'strategy') -> None:
         if strategy != 'inform':
             raise ValueError(f"Invalid {label}: string strategy must be 'inform', got {strategy!r}")
         return
-    # strategy is RetryStrategy | FallbackStrategy (a 2-tuple) per the type,
-    # but at runtime it could be anything if coming from untyped input.
-    try:
-        kind, value = strategy  # type: ignore[misc]
-    except (TypeError, ValueError):
-        raise ValueError(f'Invalid {label}: expected a string or 2-tuple, got {strategy!r}') from None
+    if not isinstance(strategy, tuple):  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise ValueError(f'Invalid {label}: expected a string or tuple, got {strategy!r}')
+    if len(strategy) < 2:
+        raise ValueError(f'Invalid {label}: expected a tuple of length 2 or 4, got {strategy!r}')
+    kind = strategy[0]
     if kind == 'retry':
-        if not isinstance(value, int) or value < 1:
-            raise ValueError(f'Invalid {label}: retry max_retries must be a positive integer, got {value!r}')
+        if len(strategy) == 2:
+            _, max_retries = strategy
+            if not isinstance(max_retries, int) or max_retries < 1:  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise ValueError(f'Invalid {label}: retry max_retries must be a positive integer, got {max_retries!r}')
+        elif len(strategy) == 4:
+            _, max_retries, delay, exc_types = strategy  # type: ignore[misc]
+            if not isinstance(max_retries, int) or max_retries < 1:  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise ValueError(f'Invalid {label}: retry max_retries must be a positive integer, got {max_retries!r}')
+            if not isinstance(delay, (int, float)) or delay < 0:  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise ValueError(f'Invalid {label}: retry_delay must be a non-negative number, got {delay!r}')
+            if not isinstance(exc_types, tuple) or not all(  # pyright: ignore[reportUnnecessaryIsInstance]
+                isinstance(t, type) and issubclass(t, Exception)  # pyright: ignore[reportUnnecessaryIsInstance]
+                for t in exc_types
+            ):
+                raise ValueError(
+                    f'Invalid {label}: retryable_exceptions must be a tuple of Exception subclasses, got {exc_types!r}'
+                )
+        else:
+            raise ValueError(f'Invalid {label}: retry strategy must be a 2-tuple or 4-tuple, got {strategy!r}')
     elif kind == 'fallback':
-        pass  # any value is acceptable
+        if len(strategy) != 2:
+            raise ValueError(f'Invalid {label}: fallback strategy must be a 2-tuple, got {strategy!r}')
     else:
         raise ValueError(f"Invalid {label}: tuple strategy kind must be 'retry' or 'fallback', got {kind!r}")
 
@@ -100,15 +124,37 @@ def _format_error(tool_name: str, error: Exception, *, include_traceback: bool) 
 # ---------------------------------------------------------------------------
 
 
-def retry(max_retries: int = 3) -> RetryStrategy:
+def retry(
+    max_retries: int = 3,
+    *,
+    retry_delay: float = 0,
+    retryable_exceptions: tuple[type[Exception], ...] = (Exception,),
+) -> RetryStrategy:
     """Create a retry strategy.
 
     Args:
         max_retries: Maximum number of retry attempts before falling back to ``inform``.
+        retry_delay: Base delay in seconds for exponential backoff between retries.
+            When > 0, waits ``retry_delay * 2 ** attempt`` seconds before each retry.
+            Defaults to 0 (no delay).
+        retryable_exceptions: Exception types eligible for retry. If the raised
+            exception is not an instance of any of these types, it is not retried
+            and the inform strategy is used immediately. Defaults to ``(Exception,)``
+            (all exceptions are retryable).
     """
     if not isinstance(max_retries, int) or max_retries < 1:  # pyright: ignore[reportUnnecessaryIsInstance]
         raise ValueError(f'max_retries must be a positive integer, got {max_retries!r}')
-    return ('retry', max_retries)
+    if not isinstance(retry_delay, (int, float)) or retry_delay < 0:  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise ValueError(f'retry_delay must be a non-negative number, got {retry_delay!r}')
+    if not isinstance(retryable_exceptions, tuple) or not all(  # pyright: ignore[reportUnnecessaryIsInstance]
+        isinstance(t, type) and issubclass(t, Exception)  # pyright: ignore[reportUnnecessaryIsInstance]
+        for t in retryable_exceptions
+    ):
+        raise ValueError(f'retryable_exceptions must be a tuple of Exception subclasses, got {retryable_exceptions!r}')
+    # Use the short 2-tuple form when defaults are used, for backward compat.
+    if retry_delay == 0 and retryable_exceptions == (Exception,):
+        return ('retry', max_retries)
+    return ('retry', max_retries, retry_delay, retryable_exceptions)
 
 
 def fallback(value: Any = None) -> FallbackStrategy:
@@ -173,10 +219,21 @@ class ToolErrorRecovery(AbstractCapability[Any]):
     Useful for debugging but may waste tokens in production.
     """
 
+    max_total_errors: int | None = None
+    """Maximum number of total errors across all tools before recovery stops.
+
+    When set, the capability tracks every error that occurs (including errors
+    consumed by retry attempts).  Once the budget is exhausted, subsequent errors
+    propagate as-is instead of being recovered.  ``None`` (default) means no limit.
+    """
+
     # --- Per-run state (populated by ``for_run``) ---
 
     _retry_counts: dict[str, int] = field(default_factory=lambda: dict[str, int](), repr=False)
     """Tracks per-tool retry counts within a single run.  Keys are ``tool_name``."""
+
+    _total_errors: int = field(default=0, repr=False)
+    """Total errors observed in this run (for ``max_total_errors`` budget)."""
 
     def __post_init__(self) -> None:
         """Validate strategies at construction time."""
@@ -195,11 +252,16 @@ class ToolErrorRecovery(AbstractCapability[Any]):
             default_strategy=self.default_strategy,
             tool_strategies=self.tool_strategies,
             include_traceback=self.include_traceback,
+            max_total_errors=self.max_total_errors,
         )
 
     def _get_strategy(self, tool_name: str) -> Strategy:
         """Look up the strategy for a given tool."""
         return self.tool_strategies.get(tool_name, self.default_strategy)
+
+    def _budget_exhausted(self) -> bool:
+        """Return ``True`` if the error budget has been spent."""
+        return self.max_total_errors is not None and self._total_errors > self.max_total_errors
 
     async def wrap_tool_execute(
         self,
@@ -222,6 +284,10 @@ class ToolErrorRecovery(AbstractCapability[Any]):
             return await handler(args)
 
         max_retries: int = strategy[1]
+        retry_delay: float = strategy[2] if len(strategy) == 4 else 0  # type: ignore[misc]
+        retryable_exceptions: tuple[type[Exception], ...] = (
+            strategy[3] if len(strategy) == 4 else (Exception,)  # type: ignore[misc]
+        )
         last_error: Exception | None = None
 
         for attempt in range(1 + max_retries):
@@ -232,8 +298,20 @@ class ToolErrorRecovery(AbstractCapability[Any]):
                 return result
             except Exception as exc:
                 last_error = exc
+                self._total_errors += 1
                 self._retry_counts[call.tool_name] = attempt + 1
+
+                # If the exception isn't retryable, stop immediately.
+                if not isinstance(exc, retryable_exceptions):
+                    return _format_error(call.tool_name, exc, include_traceback=self.include_traceback)
+
+                # If the error budget is exhausted, let the error propagate.
+                if self._budget_exhausted():
+                    raise
+
                 if attempt < max_retries:
+                    if retry_delay > 0:
+                        await anyio.sleep(retry_delay * (2**attempt))
                     continue
                 # All retries exhausted -- fall through to inform.
                 return _format_error(call.tool_name, exc, include_traceback=self.include_traceback)
@@ -256,6 +334,12 @@ class ToolErrorRecovery(AbstractCapability[Any]):
         and this hook is not reached (the wrapper catches exceptions before
         they propagate to the hook).
         """
+        self._total_errors += 1
+
+        # If the error budget is exhausted, let the error propagate.
+        if self._budget_exhausted():
+            raise error
+
         strategy = self._get_strategy(call.tool_name)
 
         if isinstance(strategy, tuple) and strategy[0] == 'fallback':
