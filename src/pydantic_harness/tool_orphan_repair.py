@@ -253,7 +253,7 @@ def _repair_response_request_pair(
 
     # --- Phase 6: Ensure the request has non-system parts ---
     non_system_parts = [p for p in kept_parts if not isinstance(p, SystemPromptPart)]
-    if not non_system_parts:
+    if not non_system_parts:  # pragma: no cover – defensive; Phase 5 always injects non-system parts
         logger.debug('Inserted placeholder UserPromptPart to maintain message alternation')
         kept_parts.append(UserPromptPart(content='Continue.'))
         repairs += 1

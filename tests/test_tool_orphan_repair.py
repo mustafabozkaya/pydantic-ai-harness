@@ -20,6 +20,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from pydantic_harness.tool_orphan_repair import ToolOrphanRepair
 from pydantic_harness.tool_orphan_repair import _repair_messages  # pyright: ignore[reportPrivateUsage]
 
 # ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ def _tool_call_response(*calls: tuple[str, str]) -> ModelResponse:
 def _tool_return_request(*returns: tuple[str, str], extra_parts: list[ModelRequestPart] | None = None) -> ModelRequest:
     """Create a request with ToolReturnParts: (tool_name, tool_call_id)."""
     parts: list[ModelRequestPart] = [ToolReturnPart(tool_name=n, content='ok', tool_call_id=cid) for n, cid in returns]
-    if extra_parts:
+    if extra_parts:  # pragma: no cover – convenience parameter unused so far
         parts.extend(extra_parts)
     return ModelRequest(parts=parts)
 
@@ -593,3 +594,63 @@ class TestDebugLogging:
         # is NOT needed here. Instead, verify the orphaned return stripping was logged.
         assert any('Stripped orphaned ToolReturnPart' in r.message for r in caplog.records)
         assert any('Injected synthetic ToolReturnPart' in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# before_model_request integration
+# ---------------------------------------------------------------------------
+
+
+class TestBeforeModelRequest:
+    @pytest.mark.anyio
+    async def test_before_model_request_repairs_messages(self) -> None:
+        """The capability's ``before_model_request`` hook delegates to ``_repair_messages``."""
+        from unittest.mock import MagicMock
+
+        from pydantic_ai.models import ModelRequestContext
+
+        cap: ToolOrphanRepair = ToolOrphanRepair(warn=False)
+
+        msgs: list[ModelMessage] = [
+            _user_request(),
+            _tool_call_response(('fetch', 'c1')),
+            # Request is missing the return for c1 — should be injected.
+            _user_request('follow-up'),
+        ]
+
+        mock_ctx = MagicMock()
+        request_context = MagicMock(spec=ModelRequestContext)
+        request_context.messages = list(msgs)
+
+        result = await cap.before_model_request(mock_ctx, request_context)
+        assert result is request_context
+        # A synthetic ToolReturnPart for c1 should have been injected.
+        repaired = request_context.messages
+        assert any(
+            isinstance(p, ToolReturnPart) and p.tool_call_id == 'c1'
+            for msg in repaired
+            if isinstance(msg, ModelRequest)
+            for p in msg.parts
+        )
+
+
+# ---------------------------------------------------------------------------
+# Consecutive ModelResponse messages (branch coverage for line 135->138)
+# ---------------------------------------------------------------------------
+
+
+class TestConsecutiveResponses:
+    def test_consecutive_model_responses(self) -> None:
+        """Two consecutive ModelResponses (no interleaved request) are handled."""
+        msgs: list[ModelMessage] = [
+            _user_request(),
+            # First response with an orphaned tool call.
+            _tool_call_response(('alpha', 'a1')),
+            # Second response immediately follows (no request in between).
+            ModelResponse(parts=[TextPart(content='some text')]),
+            _user_request('next'),
+        ]
+        repaired = _repair_messages(msgs, warn=False)
+        # The first response's orphaned call should be dropped since
+        # the next message is a ModelResponse, not a ModelRequest.
+        assert len(repaired) == 3  # user, text-response, user
