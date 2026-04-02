@@ -7,4 +7,11 @@ Usage:
 # Each capability module is imported and re-exported here.
 # Capabilities are listed alphabetically.
 
-__all__: list[str] = []
+from pydantic_harness.planning import Planning, Task, TaskStatus, format_plan
+
+__all__: list[str] = [
+    'Planning',
+    'Task',
+    'TaskStatus',
+    'format_plan',
+]
