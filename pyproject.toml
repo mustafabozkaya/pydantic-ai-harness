@@ -80,7 +80,7 @@ quote-style = 'single'
 pythonVersion = '3.10'
 typeCheckingMode = 'strict'
 executionEnvironments = [
-    { root = 'tests', reportPrivateUsage = false },
+    { root = 'tests', reportPrivateUsage = false, reportUnusedFunction = false },
 ]
 
 [tool.pytest.ini_options]

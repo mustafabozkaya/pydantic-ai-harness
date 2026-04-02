@@ -14,6 +14,11 @@ from pydantic_ai.usage import RunUsage
 from pydantic_harness import ToolBudget, ToolBudgetExceeded
 
 
+@pytest.fixture(params=['asyncio'])
+def anyio_backend(request: pytest.FixtureRequest) -> str:
+    return request.param  # type: ignore[no-any-return]
+
+
 def _text(text: str) -> ModelResponse:
     return ModelResponse(parts=[TextPart(content=text)])
 
