@@ -332,6 +332,27 @@ class TestCostGuard:
         result = await guard.before_model_request(ctx, _mock_request_context())
         assert result is not None
 
+    async def test_boundary_exactly_at_limit(self) -> None:
+        guard = CostGuard(max_total_tokens=100)
+        ctx = _make_run_context(input_tokens=50, output_tokens=50)
+        result = await guard.before_model_request(ctx, _mock_request_context())
+        assert result is not None
+
+    async def test_limit_zero_with_usage(self) -> None:
+        guard = CostGuard(max_total_tokens=0)
+        ctx = _make_run_context(input_tokens=1)
+        with pytest.raises(BudgetExceededError):
+            await guard.before_model_request(ctx, _mock_request_context())
+        ctx_zero = _make_run_context(input_tokens=0, output_tokens=0)
+        result = await guard.before_model_request(ctx_zero, _mock_request_context())
+        assert result is not None
+
+    async def test_all_limits_one_exceeded(self) -> None:
+        guard = CostGuard(max_input_tokens=100, max_output_tokens=100, max_total_tokens=200)
+        ctx = _make_run_context(input_tokens=10, output_tokens=150)
+        with pytest.raises(BudgetExceededError, match='Output token budget'):
+            await guard.before_model_request(ctx, _mock_request_context())
+
     def test_serialization_name(self) -> None:
         """CostGuard should be spec-serializable."""
         assert CostGuard.get_serialization_name() == 'CostGuard'
@@ -429,6 +450,17 @@ class TestToolGuard:
 
         result = await guard.before_tool_execute(ctx, call=call, tool_def=tool_def, args={'a': 'b'})
         assert result == {'a': 'b'}
+
+    async def test_tool_blocked_and_require_approval(self) -> None:
+        guard = ToolGuard(blocked=['my_tool'], require_approval=['my_tool'])
+        ctx = _make_run_context()
+        tool_defs = [_make_tool_def('my_tool'), _make_tool_def('other_tool')]
+        result = await guard.prepare_tools(ctx, tool_defs)
+        assert all(td.name != 'my_tool' for td in result)
+        call = ToolCallPart(tool_name='my_tool', args='{}')
+        tool_def = _make_tool_def('my_tool')
+        with pytest.raises(ToolBlocked, match='no callback configured'):
+            await guard.before_tool_execute(ctx, call=call, tool_def=tool_def, args={})
 
     def test_not_serializable(self) -> None:
         """ToolGuard should not be spec-serializable (takes a callable)."""
@@ -901,6 +933,52 @@ class TestAsyncGuardrailWithContext:
         agent = Agent(TestModel(), capabilities=[AsyncGuardrail(guard=msg_guard, mode='blocking')])
         await agent.run('Hello')
         assert len(received_msgs) == 1
+
+
+# ---------------------------------------------------------------------------
+# AsyncGuardrail — context-aware guard in monitoring and concurrent modes
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncGuardrailContextModes:
+    async def test_2arg_guard_monitoring_mode(self, caplog: pytest.LogCaptureFixture) -> None:
+        async def ctx_guard(ctx: RunContext[Any], messages: list[ModelMessage]) -> GuardrailResult:
+            return GuardrailResult(passed=False, reason='monitoring flag')
+
+        agent = Agent(
+            TestModel(custom_output_text='model output'),
+            capabilities=[AsyncGuardrail(guard=ctx_guard, mode='monitoring')],
+        )
+        with caplog.at_level(logging.WARNING, logger='pydantic_harness.guardrails'):
+            result = await agent.run('Hello')
+        assert result.output == 'model output'
+        assert 'monitoring flag' in caplog.text
+
+    async def test_2arg_guard_concurrent_mode(self) -> None:
+        async def ctx_guard(ctx: RunContext[Any], messages: list[ModelMessage]) -> GuardrailResult:
+            return GuardrailResult(passed=True)
+
+        agent = Agent(
+            TestModel(custom_output_text='model output'),
+            capabilities=[AsyncGuardrail(guard=ctx_guard, mode='concurrent')],
+        )
+        result = await agent.run('Hello')
+        assert result.output == 'model output'
+
+
+# ---------------------------------------------------------------------------
+# Guard exception propagation
+# ---------------------------------------------------------------------------
+
+
+class TestGuardExceptionPropagation:
+    async def test_input_guard_exception_propagates(self) -> None:
+        def exploding_guard(text: str) -> bool:
+            raise RuntimeError('boom')
+
+        agent = Agent(TestModel(), capabilities=[InputGuardrail(guard=exploding_guard)])
+        with pytest.raises(RuntimeError, match='boom'):
+            await agent.run('Hello')
 
 
 # ---------------------------------------------------------------------------
