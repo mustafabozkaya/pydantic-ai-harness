@@ -7,4 +7,10 @@ Usage:
 # Each capability module is imported and re-exported here.
 # Capabilities are listed alphabetically.
 
-__all__: list[str] = []
+from pydantic_harness.skills import Skill, Skills, load_skills_from_directory
+
+__all__: list[str] = [
+    'Skill',
+    'Skills',
+    'load_skills_from_directory',
+]
