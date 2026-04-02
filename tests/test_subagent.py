@@ -6,13 +6,22 @@ import json
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext, Tool
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from pydantic_harness.subagent import SubAgent
+from pydantic_harness.subagent import SubAgent, _format_output, _shareable_history
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -26,6 +35,19 @@ def _make_delegate_call(agent_name: str, task: str, tool_call_id: str = 'call-1'
             ToolCallPart(
                 tool_name='delegate_task',
                 args=json.dumps({'agent_name': agent_name, 'task': task}),
+                tool_call_id=tool_call_id,
+            )
+        ]
+    )
+
+
+def _make_delegate_tasks_call(tasks: list[dict[str, str]], tool_call_id: str = 'call-1') -> ModelResponse:
+    """Build a ModelResponse that calls the delegate_tasks (plural) tool."""
+    return ModelResponse(
+        parts=[
+            ToolCallPart(
+                tool_name='delegate_tasks',
+                args=json.dumps({'tasks': tasks}),
                 tool_call_id=tool_call_id,
             )
         ]
@@ -150,6 +172,7 @@ class TestSubAgentInstructions:
         assert 'researcher' in instructions
         assert 'coder' in instructions
         assert 'delegate_task' in instructions
+        assert 'delegate_tasks' in instructions
 
     def test_instructions_include_descriptions(self) -> None:
         agent: Agent[None] = Agent(TestModel(), description='Does math')
@@ -291,6 +314,309 @@ class TestSubAgentDelegation:
         )
         result = await parent.run('Use both')
         assert result.output == 'All done'
+
+
+# ---------------------------------------------------------------------------
+# Share history tests
+# ---------------------------------------------------------------------------
+
+
+_captured_history: list[list[ModelMessage] | None] = []
+
+
+async def _capture_history_tool(ctx: RunContext[Any]) -> str:
+    """Capture the message history on the sub-agent's RunContext."""
+    _captured_history.append(list(ctx.messages))
+    return 'captured'
+
+
+class TestShareableHistory:
+    """Test _shareable_history helper."""
+
+    def test_strips_trailing_tool_call_response(self) -> None:
+        messages: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content='hi')]),
+            ModelResponse(parts=[ToolCallPart(tool_name='t', args='{}', tool_call_id='c1')]),
+        ]
+        result = _shareable_history(messages)
+        assert len(result) == 1
+        assert isinstance(result[0], ModelRequest)
+
+    def test_preserves_trailing_text_response(self) -> None:
+        messages: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content='hi')]),
+            ModelResponse(parts=[TextPart('reply')]),
+        ]
+        result = _shareable_history(messages)
+        assert len(result) == 2
+
+    def test_empty_list(self) -> None:
+        assert _shareable_history([]) == []
+
+
+class TestSubAgentShareHistory:
+    """Test share_history parameter."""
+
+    @pytest.mark.anyio
+    async def test_share_history_false_by_default(self) -> None:
+        """With default share_history=False, sub-agent gets no parent history."""
+        _captured_history.clear()
+
+        sub: Agent[Any] = Agent(
+            _sub_model_with_tool('capture_history'),
+            description='Captures history',
+            tools=[Tool(_capture_history_tool, name='capture_history')],
+        )
+
+        parent_model = _parent_model_that_delegates('sub', 'do it')
+        parent: Agent[Any] = Agent(
+            parent_model,
+            capabilities=[SubAgent[Any](agents={'sub': sub})],
+        )
+        result = await parent.run('Hello parent')
+        assert result.output == 'Parent final answer'
+        # Sub-agent should have only its own messages (not the parent's)
+        assert len(_captured_history) == 1
+        sub_messages = _captured_history[0]
+        assert sub_messages is not None
+        # The sub-agent messages should not contain the parent's user prompt
+        all_text = str(sub_messages)
+        assert 'Hello parent' not in all_text
+
+    @pytest.mark.anyio
+    async def test_share_history_true(self) -> None:
+        """With share_history=True, sub-agent receives parent's message history."""
+        _captured_history.clear()
+
+        sub: Agent[Any] = Agent(
+            _sub_model_with_tool('capture_history'),
+            description='Captures history',
+            tools=[Tool(_capture_history_tool, name='capture_history')],
+        )
+
+        parent_model = _parent_model_that_delegates('sub', 'do it')
+        parent: Agent[Any] = Agent(
+            parent_model,
+            capabilities=[SubAgent[Any](agents={'sub': sub}, share_history=True)],
+        )
+        result = await parent.run('Hello parent')
+        assert result.output == 'Parent final answer'
+        assert len(_captured_history) == 1
+        sub_messages = _captured_history[0]
+        assert sub_messages is not None
+        # The sub-agent's history should contain the parent's original user prompt
+        all_text = str(sub_messages)
+        assert 'Hello parent' in all_text
+
+
+# ---------------------------------------------------------------------------
+# Parallel delegation tests
+# ---------------------------------------------------------------------------
+
+
+class TestSubAgentDelegateTasks:
+    """Test the delegate_tasks (parallel) tool."""
+
+    @pytest.mark.anyio
+    async def test_delegate_tasks_parallel(self) -> None:
+        """delegate_tasks runs multiple sub-agents and returns all outputs."""
+        sub_a: Agent[None] = Agent(_simple_sub_model('alpha'), description='Agent A')
+        sub_b: Agent[None] = Agent(_simple_sub_model('beta'), description='Agent B')
+
+        call_count = 0
+
+        def parent_handle(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _make_delegate_tasks_call(
+                    [
+                        {'agent': 'a', 'task': 'task for a'},
+                        {'agent': 'b', 'task': 'task for b'},
+                    ]
+                )
+            return ModelResponse(parts=[TextPart('All done parallel')])
+
+        parent: Agent[None] = Agent(
+            FunctionModel(parent_handle),
+            capabilities=[SubAgent[None](agents={'a': sub_a, 'b': sub_b})],
+        )
+        result = await parent.run('Use both in parallel')
+        assert result.output == 'All done parallel'
+
+    @pytest.mark.anyio
+    async def test_delegate_tasks_returns_results_in_order(self) -> None:
+        """Results from delegate_tasks are in the same order as the input tasks."""
+        sub_a: Agent[None] = Agent(_simple_sub_model('first'), description='A')
+        sub_b: Agent[None] = Agent(_simple_sub_model('second'), description='B')
+
+        call_count = 0
+        captured_tool_return: list[Any] = []
+
+        def parent_handle(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _make_delegate_tasks_call(
+                    [
+                        {'agent': 'a', 'task': 'go a'},
+                        {'agent': 'b', 'task': 'go b'},
+                    ]
+                )
+            # Capture the tool return from the messages
+            for msg in messages:
+                for part in msg.parts:
+                    if isinstance(part, ToolReturnPart) and part.tool_name == 'delegate_tasks':
+                        captured_tool_return.append(part.content)
+            return ModelResponse(parts=[TextPart('Done')])
+
+        parent: Agent[None] = Agent(
+            FunctionModel(parent_handle),
+            capabilities=[SubAgent[None](agents={'a': sub_a, 'b': sub_b})],
+        )
+        await parent.run('Go')
+        assert len(captured_tool_return) == 1
+        assert captured_tool_return[0] == ['first', 'second']
+
+    @pytest.mark.anyio
+    async def test_delegate_tasks_unknown_agent_triggers_retry(self) -> None:
+        """If any task references an unknown agent, ModelRetry is raised."""
+        sub: Agent[None] = Agent(_simple_sub_model('ok'), description='Sub')
+
+        call_count = 0
+
+        def parent_handle(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _make_delegate_tasks_call(
+                    [
+                        {'agent': 'nonexistent', 'task': 'bad'},
+                    ]
+                )
+            if call_count == 2:
+                return _make_delegate_tasks_call(
+                    [
+                        {'agent': 'sub', 'task': 'good'},
+                    ]
+                )
+            return ModelResponse(parts=[TextPart('Recovered')])
+
+        parent: Agent[None] = Agent(
+            FunctionModel(parent_handle),
+            capabilities=[SubAgent[None](agents={'sub': sub})],
+        )
+        result = await parent.run('Go')
+        assert result.output == 'Recovered'
+
+
+# ---------------------------------------------------------------------------
+# Structured output tests
+# ---------------------------------------------------------------------------
+
+
+class _SampleModel(BaseModel):
+    name: str
+    value: int
+
+
+class TestFormatOutput:
+    """Test _format_output for structured output preservation."""
+
+    def test_str_passthrough(self) -> None:
+        assert _format_output('hello') == 'hello'
+
+    def test_pydantic_model_json(self) -> None:
+        model = _SampleModel(name='test', value=42)
+        result = _format_output(model)
+        parsed = json.loads(result)
+        assert parsed == {'name': 'test', 'value': 42}
+
+    def test_dict_json(self) -> None:
+        result = _format_output({'key': 'val', 'num': 1})
+        parsed = json.loads(result)
+        assert parsed == {'key': 'val', 'num': 1}
+
+    def test_list_json(self) -> None:
+        result = _format_output([1, 2, 3])
+        parsed = json.loads(result)
+        assert parsed == [1, 2, 3]
+
+    def test_other_type_repr(self) -> None:
+        result = _format_output(42)
+        assert result == '42'
+
+    def test_bool_repr(self) -> None:
+        result = _format_output(True)
+        assert result == 'True'
+
+
+class TestStructuredOutputEndToEnd:
+    """Test that structured sub-agent outputs are preserved in delegation."""
+
+    @pytest.mark.anyio
+    async def test_pydantic_model_output(self) -> None:
+        """A sub-agent returning a Pydantic model gets JSON-serialized."""
+        sub: Agent[None, _SampleModel] = Agent(
+            TestModel(custom_output_args={'name': 'sub', 'value': 99}),
+            output_type=_SampleModel,
+            description='Returns structured',
+        )
+
+        call_count = 0
+        captured_tool_return: list[str] = []
+
+        def parent_handle(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _make_delegate_call('sub', 'get data')
+            for msg in messages:
+                for part in msg.parts:
+                    if isinstance(part, ToolReturnPart) and part.tool_name == 'delegate_task':
+                        captured_tool_return.append(str(part.content))
+            return ModelResponse(parts=[TextPart('Done')])
+
+        parent: Agent[None] = Agent(
+            FunctionModel(parent_handle),
+            capabilities=[SubAgent[None](agents={'sub': sub})],
+        )
+        await parent.run('Get structured data')
+        assert len(captured_tool_return) == 1
+        parsed = json.loads(captured_tool_return[0])
+        assert parsed == {'name': 'sub', 'value': 99}
+
+    @pytest.mark.anyio
+    async def test_dict_output(self) -> None:
+        """A sub-agent returning a dict gets JSON-serialized."""
+        sub: Agent[None, dict[str, int]] = Agent(
+            TestModel(custom_output_args={'a': 1}),
+            output_type=dict[str, int],
+            description='Returns dict',
+        )
+
+        call_count = 0
+        captured_tool_return: list[str] = []
+
+        def parent_handle(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _make_delegate_call('sub', 'get dict')
+            for msg in messages:
+                for part in msg.parts:
+                    if isinstance(part, ToolReturnPart) and part.tool_name == 'delegate_task':
+                        captured_tool_return.append(str(part.content))
+            return ModelResponse(parts=[TextPart('Done')])
+
+        parent: Agent[None] = Agent(
+            FunctionModel(parent_handle),
+            capabilities=[SubAgent[None](agents={'sub': sub})],
+        )
+        await parent.run('Get dict data')
+        assert len(captured_tool_return) == 1
+        parsed = json.loads(captured_tool_return[0])
+        assert parsed == {'a': 1}
 
 
 # ---------------------------------------------------------------------------
