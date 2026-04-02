@@ -100,3 +100,4 @@ exclude_lines = [
     'assert_never',
     'if TYPE_CHECKING:',
 ]
+

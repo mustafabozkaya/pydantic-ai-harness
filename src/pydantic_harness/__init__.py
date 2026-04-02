@@ -7,4 +7,8 @@ Usage:
 # Each capability module is imported and re-exported here.
 # Capabilities are listed alphabetically.
 
-__all__: list[str] = []
+from .subagent import SubAgent
+
+__all__: list[str] = [
+    'SubAgent',
+]
