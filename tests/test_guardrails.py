@@ -141,6 +141,45 @@ class TestInputGuardrail:
         await guardrail.before_run(ctx)
         assert not called
 
+    async def test_empty_string_input(self) -> None:
+        received: list[str] = []
+
+        def capture(text: str) -> bool:
+            received.append(text)
+            return True
+
+        agent = Agent(TestModel(), capabilities=[InputGuardrail(guard=capture)])
+        result = await agent.run('')
+        assert received == ['']
+        assert result.output is not None
+
+    async def test_non_string_prompt_converted(self) -> None:
+        received: list[str] = []
+
+        def capture(text: str) -> bool:
+            received.append(text)
+            return True
+
+        guardrail = InputGuardrail(guard=capture)
+        ctx = _make_run_context(prompt=['hello'])
+        await guardrail.before_run(ctx)
+        assert received == ["['hello']"]
+
+    async def test_multiple_input_guardrails(self) -> None:
+        received_a: list[str] = []
+        received_b: list[str] = []
+
+        agent = Agent(
+            TestModel(),
+            capabilities=[
+                InputGuardrail(guard=lambda text: received_a.append(text) or True),  # type: ignore[func-returns-value]
+                InputGuardrail(guard=lambda text: received_b.append(text) or True),  # type: ignore[func-returns-value]
+            ],
+        )
+        await agent.run('multi guard test')
+        assert received_a == ['multi guard test']
+        assert received_b == ['multi guard test']
+
     def test_not_serializable(self) -> None:
         """InputGuardrail should not be spec-serializable (takes a callable)."""
         assert InputGuardrail.get_serialization_name() is None
@@ -478,6 +517,16 @@ class TestInputGuardrailWarn:
         agent = Agent(TestModel(), capabilities=[InputGuardrail(context_guard=ctx_guard)])
         with pytest.raises(InputBlocked):
             await agent.run('Hello')
+
+    async def test_async_context_guard_warn_mode(self, caplog: pytest.LogCaptureFixture) -> None:
+        async def ctx_guard(ctx: RunContext[Any], text: str) -> bool:
+            return False
+
+        agent = Agent(TestModel(), capabilities=[InputGuardrail(context_guard=ctx_guard, on_fail='warn')])
+        with caplog.at_level(logging.WARNING, logger='pydantic_harness.guardrails'):
+            result = await agent.run('Hello')
+        assert result.output is not None
+        assert 'Input blocked by guardrail' in caplog.text
 
     def test_no_guard_raises_value_error(self) -> None:
         """Neither guard nor context_guard should raise ValueError."""
@@ -913,12 +962,14 @@ def _make_run_context(
     *,
     input_tokens: int = 0,
     output_tokens: int = 0,
+    prompt: str | list[str] | None = None,
 ) -> RunContext[None]:
     """Create a minimal RunContext for unit testing hooks directly."""
     return RunContext[None](
         deps=None,
         model=TestModel(),
         usage=RunUsage(input_tokens=input_tokens, output_tokens=output_tokens),
+        prompt=prompt,
     )
 
 
