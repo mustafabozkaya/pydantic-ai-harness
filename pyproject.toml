@@ -53,6 +53,16 @@ vcs = 'git'
 style = 'pep440'
 bump = true
 
+[tool.uv.sources]
+# Point at the `return-schema-unification` branch of pydantic-ai (PR #4964) so we
+# can consume the new `ToolDefinition.function_signature` field for code mode.
+# Drop this once the PR lands and a release ships.
+pydantic-ai-slim = { git = 'https://github.com/pydantic/pydantic-ai.git', branch = 'return-schema-unification', subdirectory = 'pydantic_ai_slim' }
+# Use Monty `main` so we get `MontyRepl.feed_run_async()` (the deprecated
+# `run_repl_async` helper still works on 0.0.9 but the new direct method is the
+# supported path going forward). Drop this once the next monty release ships.
+pydantic-monty = { git = 'https://github.com/pydantic/monty.git', branch = 'main', subdirectory = 'crates/monty-python' }
+
 [tool.hatch.build.targets.wheel]
 packages = ['pydantic_harness']
 
@@ -90,6 +100,10 @@ filterwarnings = ['error']
 [tool.coverage.run]
 branch = true
 source = ['pydantic_harness', 'tests']
+# Track coverage in worker threads — `pydantic_monty.run_repl_async` runs the
+# Rust REPL on a `ThreadPoolExecutor`, so without this every external function
+# the sandbox dispatches to is invisible to coverage.
+concurrency = ['thread']
 
 [tool.coverage.report]
 fail_under = 100
