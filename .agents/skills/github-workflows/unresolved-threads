@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# List unresolved review threads on a PR. Paginates through all threads.
+set -euo pipefail
+
+pr="${1:?PR number required}"
+if [[ $# -ge 3 ]]; then
+  owner="$2"; repo="$3"
+else
+  _nwo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "")
+  if [[ -z "$_nwo" ]]; then
+    echo "Error: could not auto-detect repo. Pass owner and repo as arguments." >&2; exit 1
+  fi
+  owner="${_nwo%%/*}"
+  repo="${_nwo##*/}"
+fi
+
+python3 -c "
+import json, subprocess, sys
+
+def fetch_page(cursor=None):
+    after = f', after: \"{cursor}\"' if cursor else ''
+    query = '''{{
+      repository(owner:\"{owner}\", name:\"{repo}\") {{
+        pullRequest(number:{pr}) {{
+          reviewThreads(first:100{after}) {{
+            nodes {{
+              id
+              isResolved
+              isOutdated
+              path
+              line
+              comments(first:20) {{
+                nodes {{
+                  databaseId
+                  author {{ login }}
+                  body
+                  createdAt
+                }}
+              }}
+            }}
+            pageInfo {{ hasNextPage endCursor }}
+          }}
+        }}
+      }}
+    }}'''.format(owner='$owner', repo='$repo', pr='$pr', after=after)
+    result = subprocess.run(
+        ['gh', 'api', 'graphql', '-f', f'query={query}'],
+        capture_output=True, text=True
+    )
+    return json.loads(result.stdout)
+
+threads = []
+cursor = None
+while True:
+    data = fetch_page(cursor)
+    page = data['data']['repository']['pullRequest']['reviewThreads']
+    for t in page['nodes']:
+        if not t['isResolved'] and t['comments']['nodes']:
+            root = t['comments']['nodes'][0]
+            threads.append({
+                'id': t['id'],
+                'author': root['author']['login'],
+                'commentId': root['databaseId'],
+                'createdAt': root['createdAt'],
+                'path': t.get('path'),
+                'line': t.get('line'),
+                'isOutdated': t.get('isOutdated', False),
+                'comments': [
+                    {
+                        'id': c['databaseId'],
+                        'author': c['author']['login'],
+                        'body': c['body'],
+                        'createdAt': c['createdAt'],
+                    }
+                    for c in t['comments']['nodes']
+                ],
+            })
+    if not page['pageInfo']['hasNextPage']:
+        break
+    cursor = page['pageInfo']['endCursor']
+
+print(json.dumps(threads, indent=2))
+"

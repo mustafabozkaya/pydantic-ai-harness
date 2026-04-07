@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: fetch-pr-comments <pr_number> [options]
+
+Fetches all comments for a PR: inline review comments, issue comments,
+formal reviews, and thread IDs (via GraphQL). Combines role tagging,
+time filtering, and configurable body truncation.
+
+Options:
+  --since DAYS       Only include comments from last N days (default: all)
+  --latest-round     Scope to latest review round (mutually exclusive with --since)
+  --max-body N       Truncate body to N chars (default: 500, 0 = no limit)
+  --repo OWNER/REPO  Repository (default: auto-detect from current directory)
+  --author AUTHOR    PR author for role tagging (default: auto-detect from gh auth)
+
+Output: JSON object with:
+  inline_comments  - PR review comments (code-level)
+  issue_comments   - General PR/issue comments
+  reviews          - Formal review submissions (with state)
+  threads          - Review thread ID map (comment_id -> thread info)
+  comment_counts   - {total, by_role}
+EOF
+  exit 1
+}
+
+PR_NUMBER=""
+SINCE_DAYS=""
+LATEST_ROUND=false
+MAX_BODY=500
+REPO=""
+AUTHOR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --since)  SINCE_DAYS="$2"; shift 2 ;;
+    --latest-round) LATEST_ROUND=true; shift ;;
+    --max-body) MAX_BODY="$2"; shift 2 ;;
+    --repo)   REPO="$2"; shift 2 ;;
+    --author) AUTHOR="$2"; shift 2 ;;
+    -h|--help) usage ;;
+    *)
+      if [[ -z "$PR_NUMBER" ]]; then
+        PR_NUMBER="$1"; shift
+      else
+        echo "Error: unexpected argument '$1'" >&2; usage
+      fi
+      ;;
+  esac
+done
+
+[[ -z "$PR_NUMBER" ]] && { echo "Error: PR number required" >&2; usage; }
+
+if [[ "$LATEST_ROUND" == true && -n "$SINCE_DAYS" ]]; then
+  echo "Error: --latest-round and --since are mutually exclusive" >&2; exit 1
+fi
+
+# Auto-detect repo and author if not specified
+[[ -z "$REPO" ]] && REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "")
+[[ -z "$REPO" ]] && { echo "Error: could not auto-detect repo. Use --repo OWNER/REPO" >&2; exit 1; }
+[[ -z "$AUTHOR" ]] && AUTHOR=$(gh api user -q .login 2>/dev/null || echo "")
+[[ -z "$AUTHOR" ]] && { echo "Error: could not auto-detect author. Use --author USERNAME" >&2; exit 1; }
+
+# Date cutoff (empty = no filtering)
+CUTOFF=""
+if [[ -n "$SINCE_DAYS" ]]; then
+  if [[ "$(uname)" == "Darwin" ]]; then
+    CUTOFF=$(date -v-${SINCE_DAYS}d -u +%Y-%m-%dT%H:%M:%SZ)
+  else
+    CUTOFF=$(date -u -d "$SINCE_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)
+  fi
+  echo "Filtering to comments since $CUTOFF" >&2
+fi
+
+# Role tagging + body truncation + optional time filter as jq function
+ROLE_AND_TRIM="def role_tag: if .user.login == \$author then \"author\" elif .user.login == \"DouweM\" then \"maintainer\" elif (.user.login == \"devin-ai-integration[bot]\" or .user.login == \"github-actions[bot]\") then \"trusted-bot\" elif (.user.login | endswith(\"[bot]\")) then \"bot\" else \"other\" end; def trim_body: if (\$max_body | tonumber) > 0 then .[:(\$max_body | tonumber)] else . end; def after_cutoff(\$field): if \$cutoff == \"\" then true else .[\$field] > \$cutoff end;"
+
+# Fetch inline review comments
+INLINE=$(gh api "repos/$REPO/pulls/$PR_NUMBER/comments" --paginate 2>/dev/null \
+  | jq --arg author "$AUTHOR" --arg cutoff "$CUTOFF" --arg max_body "$MAX_BODY" "
+    $ROLE_AND_TRIM
+    [.[] | select(after_cutoff(\"created_at\")) | {
+      id: .id,
+      author: .user.login,
+      role: role_tag,
+      path: .path,
+      line: (.line // .original_line),
+      diff_hunk: .diff_hunk,
+      body: (.body | trim_body),
+      in_reply_to_id: .in_reply_to_id,
+      html_url: .html_url,
+      created_at: .created_at
+    }]
+  " 2>/dev/null || echo "[]")
+
+# Fetch issue/general comments
+ISSUE=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate 2>/dev/null \
+  | jq --arg author "$AUTHOR" --arg cutoff "$CUTOFF" --arg max_body "$MAX_BODY" "
+    $ROLE_AND_TRIM
+    [.[] | select(after_cutoff(\"created_at\")) | {
+      id: .id,
+      author: .user.login,
+      role: role_tag,
+      body: (.body | trim_body),
+      html_url: .html_url,
+      created_at: .created_at
+    }]
+  " 2>/dev/null || echo "[]")
+
+# Fetch formal reviews
+REVIEWS=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --paginate 2>/dev/null \
+  | jq --arg author "$AUTHOR" --arg cutoff "$CUTOFF" --arg max_body "$MAX_BODY" "
+    $ROLE_AND_TRIM
+    [.[] | select(after_cutoff(\"submitted_at\")) | {
+      id: .id,
+      author: .user.login,
+      role: role_tag,
+      state: .state,
+      body: (.body | trim_body),
+      submitted_at: .submitted_at
+    }]
+  " 2>/dev/null || echo "[]")
+
+# Fetch review thread IDs via GraphQL (comment_id -> thread mapping)
+OWNER="${REPO%%/*}"
+NAME="${REPO##*/}"
+THREADS=$(gh api graphql -f query="query {
+  repository(owner:\"$OWNER\", name:\"$NAME\") {
+    pullRequest(number:$PR_NUMBER) {
+      reviewThreads(first:100) {
+        nodes {
+          id
+          isResolved
+          comments(first:1) { nodes { databaseId author { login } } }
+        }
+      }
+    }
+  }
+}" 2>/dev/null \
+  | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+    | select((.comments.nodes | length) > 0)
+    | {
+        thread_id: .id,
+        comment_id: .comments.nodes[0].databaseId,
+        author: .comments.nodes[0].author.login,
+        is_resolved: .isResolved
+      }]' 2>/dev/null || echo "[]")
+
+# --latest-round: find latest non-author comment date, set lower bound to that day - 1
+if [[ "$LATEST_ROUND" == true ]]; then
+  # Find the latest date from non-author comments across all types
+  LATEST_DATE=$(jq -n \
+    --argjson inline "$INLINE" \
+    --argjson issue "$ISSUE" \
+    --argjson reviews "$REVIEWS" \
+    '[($inline[] | select(.role != "author") | .created_at),
+     ($issue[] | select(.role != "author") | .created_at),
+     ($reviews[] | select(.role != "author") | .submitted_at)]
+    | map(select(. != null)) | sort | last // empty')
+
+  if [[ -n "$LATEST_DATE" && "$LATEST_DATE" != "null" ]]; then
+    # Strip quotes from jq output
+    LATEST_DATE=$(echo "$LATEST_DATE" | tr -d '"')
+    # Compute lower bound: that calendar day (UTC) - 1 day
+    LATEST_DAY="${LATEST_DATE%%T*}"
+    if [[ "$(uname)" == "Darwin" ]]; then
+      ROUND_CUTOFF=$(date -j -v-1d -f "%Y-%m-%d" "$LATEST_DAY" -u +%Y-%m-%dT00:00:00Z)
+    else
+      ROUND_CUTOFF=$(date -u -d "$LATEST_DAY - 1 day" +%Y-%m-%dT00:00:00Z)
+    fi
+    echo "Latest review round: filtering to >= $ROUND_CUTOFF" >&2
+
+    INLINE=$(echo "$INLINE" | jq --arg cutoff "$ROUND_CUTOFF" '[.[] | select(.created_at >= $cutoff)]')
+    ISSUE=$(echo "$ISSUE" | jq --arg cutoff "$ROUND_CUTOFF" '[.[] | select(.created_at >= $cutoff)]')
+    REVIEWS=$(echo "$REVIEWS" | jq --arg cutoff "$ROUND_CUTOFF" '[.[] | select(.submitted_at >= $cutoff)]')
+  else
+    echo "Warning: no non-author comments found, returning all" >&2
+  fi
+fi
+
+# Assemble output with counts
+jq -n \
+  --argjson inline "$INLINE" \
+  --argjson issue "$ISSUE" \
+  --argjson reviews "$REVIEWS" \
+  --argjson threads "$THREADS" \
+  '{
+    inline_comments: $inline,
+    issue_comments: $issue,
+    reviews: $reviews,
+    threads: $threads,
+    comment_counts: (
+      ($inline + $issue + $reviews) | {
+        total: length,
+        by_role: (group_by(.role) | map({key: .[0].role, value: length}) | from_entries)
+      }
+    )
+  }'

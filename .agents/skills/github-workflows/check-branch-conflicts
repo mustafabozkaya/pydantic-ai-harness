@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "Usage: check-branch-conflicts <worktree_path>" >&2
+  exit 1
+fi
+
+WT="$1"
+
+MERGE_BASE=$(git -C "$WT" merge-base HEAD origin/main 2>/dev/null || echo "")
+if [[ -z "$MERGE_BASE" ]]; then
+  jq -n '{"status": "CLEAN", "conflict_files": []}'
+  exit 0
+fi
+
+MERGE_RESULT=$(git -C "$WT" merge-tree "$MERGE_BASE" HEAD origin/main 2>&1)
+
+if echo "$MERGE_RESULT" | grep -q "CONFLICT"; then
+  echo "$MERGE_RESULT" | grep "CONFLICT" | sed 's/CONFLICT.*: //' \
+    | jq -Rs '{status: "CONFLICTS", conflict_files: [split("\n") | .[] | select(length > 0)]}'
+elif [[ -n "$MERGE_RESULT" ]]; then
+  jq -n '{"status": "BEHIND", "conflict_files": []}'
+else
+  jq -n '{"status": "CLEAN", "conflict_files": []}'
+fi

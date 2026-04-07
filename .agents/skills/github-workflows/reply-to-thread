@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Reply to a PR review thread.
+# Accepts: thread node ID (PRRT_...), comment database ID (numeric),
+# or comment URL (https://...#discussion_r<id>).
+set -euo pipefail
+
+if [[ $# -lt 2 ]]; then
+  echo "Usage: reply-to-thread <thread_ref> <body> [owner/repo]"
+  echo "  thread_ref: PRRT_... node ID, numeric comment ID, or GitHub comment URL"
+  exit 1
+fi
+
+ref="$1"
+body="$2"
+repo="${3:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "pydantic/pydantic-harness")}"
+owner="${repo%%/*}"
+repo_name="${repo##*/}"
+
+# Resolve thread_ref to a GraphQL thread node ID
+resolve_thread_id() {
+  local ref="$1"
+  # Already a GraphQL node ID
+  if [[ "$ref" == PRRT_* ]]; then
+    echo "$ref"
+    return
+  fi
+  # Extract comment ID from URL if needed
+  local comment_id="$ref"
+  if [[ "$ref" == http* ]]; then
+    comment_id=$(echo "$ref" | grep -oE 'discussion_r([0-9]+)' | sed 's/discussion_r//')
+    if [[ -z "$comment_id" ]]; then
+      echo "Error: could not extract comment ID from URL: $ref" >&2
+      return 1
+    fi
+  fi
+  # Look up thread ID from comment database ID via GraphQL
+  gh api graphql -f query="{
+    repository(owner:\"$owner\", name:\"$repo_name\") {
+      pullRequests(first:10, states:OPEN, orderBy:{field:UPDATED_AT, direction:DESC}) {
+        nodes {
+          reviewThreads(first:100) {
+            nodes {
+              id
+              comments(first:1) { nodes { databaseId } }
+            }
+          }
+        }
+      }
+    }
+  }" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+target = int('$comment_id')
+for pr in data['data']['repository']['pullRequests']['nodes']:
+    for t in pr['reviewThreads']['nodes']:
+        if t['comments']['nodes'] and t['comments']['nodes'][0]['databaseId'] == target:
+            print(t['id'])
+            sys.exit(0)
+print('', file=sys.stderr)
+sys.exit(1)
+" 2>/dev/null
+}
+
+thread_id=$(resolve_thread_id "$ref") || {
+  echo "Error: could not resolve thread for ref: $ref" >&2
+  exit 1
+}
+
+escaped_body="$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$body")"
+
+gh api graphql -f query="mutation {
+  addPullRequestReviewThreadReply(input: {
+    pullRequestReviewThreadId: \"$thread_id\",
+    body: $escaped_body
+  }) {
+    comment { id url }
+  }
+}" --jq '.data.addPullRequestReviewThreadReply.comment.url' \
+  && echo "  replied to: $thread_id" \
+  || echo "  FAILED:     $thread_id"

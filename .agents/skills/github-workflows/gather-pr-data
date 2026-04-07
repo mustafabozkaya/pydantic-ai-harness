@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AUTHOR="${1:-$(gh api user -q .login 2>/dev/null || echo "")}"
+REPO="${2:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "")}"
+BARE="${3:-}"
+
+[[ -z "$AUTHOR" ]] && { echo "Error: could not auto-detect author. Pass as first argument." >&2; exit 1; }
+[[ -z "$REPO" ]] && { echo "Error: could not auto-detect repo. Pass as second argument." >&2; exit 1; }
+[[ -z "$BARE" ]] && { echo "Error: bare_repo_path required as third argument." >&2; exit 1; }
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Fetch main once for all conflict checks
+git -C "$BARE" fetch origin main 2>/dev/null
+
+PRS=$(gh pr list --repo "$REPO" --author "$AUTHOR" --json number,headRefName,title --limit 50)
+
+WORKTREE_MAP=$(git -C "$BARE" worktree list --porcelain | jq -Rs '
+  [split("\n\n") | .[] | select(length > 0) |
+   split("\n") | select(length > 1) |
+   {
+     path: (.[0] | ltrimstr("worktree ")),
+     branch: ([.[] | select(startswith("branch "))] | .[0] // "" | ltrimstr("branch refs/heads/"))
+   } | select(.branch != "")]
+  | map({(.branch): .path}) | add // {}
+')
+
+echo "$PRS" | jq -c '.[]' | while read -r pr; do
+  NUM=$(echo "$pr" | jq -r '.number')
+  BRANCH=$(echo "$pr" | jq -r '.headRefName')
+  TITLE=$(echo "$pr" | jq -r '.title')
+  WT=$(echo "$WORKTREE_MAP" | jq -r --arg b "$BRANCH" '.[$b] // "none"')
+
+  # Conflicts
+  if [[ "$WT" != "none" ]]; then
+    CONFLICT_JSON=$("$SCRIPT_DIR/check-branch-conflicts" "$WT" 2>/dev/null || echo '{"status":"ERROR","conflict_files":[]}')
+    LAST_COMMIT=$(git -C "$WT" log --no-merges -1 --format=%cI 2>/dev/null || echo "unknown")
+  else
+    CONFLICT_JSON='{"status":"N/A","conflict_files":[]}'
+    LAST_COMMIT=$(gh api "repos/$REPO/pulls/$NUM/commits" --jq '.[-1].commit.committer.date' 2>/dev/null || echo "unknown")
+  fi
+
+  # CI
+  CI_JSON=$("$SCRIPT_DIR/check-pr-ci" "$NUM" "$REPO" 2>/dev/null || echo '{"status":"ERROR","failures":[]}')
+
+  # Comments via consolidated fetcher (role tagging, thread IDs, reviews)
+  COMMENTS_JSON=$("$SCRIPT_DIR/fetch-pr-comments" "$NUM" --max-body 200 --repo "$REPO" --author "$AUTHOR" 2>/dev/null || echo '{"inline_comments":[],"issue_comments":[],"reviews":[],"threads":[],"comment_counts":{"total":0,"by_role":{}}}')
+
+  jq -n \
+    --argjson num "$NUM" \
+    --arg branch "$BRANCH" \
+    --arg title "$TITLE" \
+    --arg worktree "$WT" \
+    --argjson conflicts "$CONFLICT_JSON" \
+    --argjson ci "$CI_JSON" \
+    --arg last_commit "$LAST_COMMIT" \
+    --argjson comments "$COMMENTS_JSON" \
+    '{number: $num, branch: $branch, title: $title, worktree: $worktree,
+      conflicts: $conflicts.status, conflict_files: $conflicts.conflict_files,
+      ci: $ci.status, ci_failures: $ci.failures, last_commit: $last_commit,
+      review_comments: $comments.inline_comments,
+      issue_comments: $comments.issue_comments,
+      reviews: $comments.reviews,
+      threads: $comments.threads,
+      comment_counts: $comments.comment_counts}'
+done | jq -s '. // []'

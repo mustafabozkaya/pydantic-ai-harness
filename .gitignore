@@ -1,3 +1,26 @@
+.env*
+.mcp.json
+.DS_Store
+.agents/settings.local.json
+CLAUDE.local.md
+
+# Ralph loop runtime artifacts
+.claude/skills/pr-loop/ralph-state.json
+.claude/skills/pr-loop/ralph-loop.pid
+.claude/skills/pr-loop/ralph-loop.log
+.claude/skills/pr-loop/ralph-stderr.log
+.claude/skills/pr-loop/triage-input.json
+.claude/skills/pr-loop/triage.json
+.claude/skills/pr-loop/goals.json
+.claude/skills/pr-loop/questions.json
+.claude/skills/pr-loop/plan-output.md
+.claude/skills/pr-loop/plan-stream.jsonl
+.claude/skills/pr-loop/plan-gaps.json
+.claude/skills/pr-loop/plan-research/
+.claude/skills/pr-loop/test-output.txt
+.claude/skills/pr-loop/test-report.json
+.claude/skills/pr-loop/review-report.md
+
 # IDE
 .idea/
 

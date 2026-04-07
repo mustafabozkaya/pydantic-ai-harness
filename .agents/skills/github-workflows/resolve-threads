@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Resolve review threads by their GraphQL node IDs (PRRT_...).
+# Also supports --reply to reply and resolve in one step.
+set -euo pipefail
+
+reply_body=""
+if [[ "${1:-}" == "--reply" ]]; then
+  reply_body="${2:?--reply requires a body argument}"
+  shift 2
+fi
+
+if [[ $# -eq 0 ]]; then
+  echo "Usage: resolve-threads [--reply <body>] <thread_id> [thread_id ...]"
+  echo "  --reply <body>  Reply before resolving (for threads that warrant a response)"
+  exit 1
+fi
+
+for id in "$@"; do
+  # Optionally reply first
+  if [[ -n "$reply_body" ]]; then
+    escaped_body="$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$reply_body")"
+    gh api graphql -f query="mutation {
+      addPullRequestReviewThreadReply(input: {
+        pullRequestReviewThreadId: \"$id\",
+        body: $escaped_body
+      }) { comment { id } }
+    }" --jq '.data.addPullRequestReviewThreadReply.comment.id' > /dev/null 2>&1 || true
+  fi
+
+  # Resolve
+  RESULT=$(gh api graphql -f query="mutation {
+    resolveReviewThread(input:{threadId:\"$id\"}) {
+      thread { isResolved }
+    }
+  }" --jq '.data.resolveReviewThread.thread.isResolved' 2>/dev/null || echo "false")
+
+  jq -n --arg id "$id" --argjson resolved "$RESULT" '{id: $id, resolved: $resolved}'
+done | jq -s '.'

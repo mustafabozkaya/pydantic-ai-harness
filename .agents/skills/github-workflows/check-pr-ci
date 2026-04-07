@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: check-pr-ci <pr_number> [repo]" >&2
+  exit 1
+fi
+
+NUM="$1"
+REPO="${2:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "")}"
+[[ -z "$REPO" ]] && { echo "Error: could not auto-detect repo. Pass repo as second argument." >&2; exit 1; }
+
+CI_RAW=$(gh pr checks "$NUM" --repo "$REPO" 2>&1 || true)
+
+if echo "$CI_RAW" | grep -qE $'\tfail\t'; then
+  echo "$CI_RAW" | grep $'\tfail\t' | awk '{print $1}' \
+    | jq -Rs '{status: "FAILING", failures: [split("\n") | .[] | select(length > 0)]}'
+elif echo "$CI_RAW" | grep -qE $'\tpending\t'; then
+  jq -n '{"status": "PENDING", "failures": []}'
+else
+  jq -n '{"status": "ALL_PASSING", "failures": []}'
+fi
