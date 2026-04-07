@@ -2,12 +2,11 @@
 
 Run with:
 
-    ANTHROPIC_API_KEY=... uv run python demo_code_mode.py
+    uv pip install anthropic logfire
+    ANTHROPIC_API_KEY=... LOGFIRE_TOKEN=... uv run python demo_code_mode.py
 
-The agent has three tools (`get_price`, `get_stock`, `apply_discount`) and is asked
-a question that requires combining several tool calls with arithmetic. With CodeMode
-the model writes one Python snippet that calls all the tools instead of making many
-separate tool calls.
+Both `anthropic` and `logfire` are optional. Without `LOGFIRE_TOKEN` Logfire
+prints structured spans to stdout instead of streaming to the UI.
 """
 
 from __future__ import annotations
@@ -17,9 +16,31 @@ import os
 import sys
 
 from pydantic_ai import Agent
-from pydantic_ai.messages import TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import ToolCallPart
 
 from pydantic_harness.capabilities import CodeMode
+
+try:
+    import logfire
+except ImportError:  # pragma: no cover - logfire is optional
+    logfire = None  # type: ignore[assignment]
+
+
+def _configure_logfire() -> None:
+    """Configure Logfire if available, otherwise do nothing."""
+    if logfire is None:
+        return
+    logfire.configure(
+        service_name='pydantic-harness-demo',
+        send_to_logfire='if-token-present',
+        console=logfire.ConsoleOptions(verbose=True),
+    )
+    logfire.instrument_pydantic_ai()
+    try:
+        logfire.instrument_anthropic()
+    except Exception:  # pragma: no cover - anthropic instrumentation is optional
+        pass
+
 
 PRODUCTS: dict[str, dict[str, float | int]] = {
     'apple': {'price': 1.20, 'stock': 50},
@@ -52,8 +73,10 @@ def apply_discount(amount: float, percent: int) -> float:
 async def main() -> int:
     """Run the CodeMode demo against Claude Sonnet 4.6."""
     if not os.environ.get('ANTHROPIC_API_KEY'):
-        print('ANTHROPIC_API_KEY not set; skipping demo.', file=sys.stderr)
+        print('ANTHROPIC_API_KEY not set', file=sys.stderr)
         return 1
+
+    _configure_logfire()
 
     agent: Agent[None, str] = Agent(
         'anthropic:claude-sonnet-4-6',
@@ -76,28 +99,22 @@ async def main() -> int:
         'apply a 15% discount on that item only. '
         'What is my total in dollars?'
     )
-    print(f'>>> {question}\n')
 
-    result = await agent.run(question)
+    if logfire is not None:
+        with logfire.span('code_mode_demo', question=question):
+            result = await agent.run(question)
+    else:
+        result = await agent.run(question)
 
-    print('=== sandboxed code the model wrote ===')
     for msg in result.all_messages():
         for part in msg.parts:
             if isinstance(part, ToolCallPart) and part.tool_name == 'run_code':
                 args = part.args if isinstance(part.args, dict) else None
                 if args and 'code' in args:
                     print(args['code'])
-                    print('---')
-            elif isinstance(part, ToolReturnPart) and part.tool_name == 'run_code':
-                print(f'sandbox returned: {part.content}')
-                print('---')
+                    print()
 
-    print()
-    print('=== final answer ===')
-    for msg in result.all_messages():
-        for part in msg.parts:
-            if isinstance(part, TextPart):
-                print(part.content)
+    print(result.output)
 
     return 0
 

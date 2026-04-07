@@ -48,10 +48,10 @@ Write and run Python code in a sandboxed environment.
 
 The sandbox uses Monty, a subset of Python. Key restrictions:
 - **No classes**: class definitions are not supported
-- **No third-party libraries**: only the standard library modules listed below are available
-- **Available modules**: `sys`, `typing`, `asyncio`, `math`, `json`, `re`, `datetime`, `os`, `pathlib`
+- **No third-party libraries**: only the standard library modules listed below can be used
+- **Importable standard library modules**: `sys`, `typing`, `asyncio`, `math`, `json`, `re`, `datetime`, `os`, `pathlib`. These must be imported at the top of your snippet before use, just like in regular Python. For example: `import asyncio` then `results = await asyncio.gather(tool_one(...), tool_two(...))`.
 - **No `import *`**: wildcard imports are not supported
-- **All available tool functions are async**: invoke them with `await`, e.g. `result = await tool_name(arg=value)`. Calling without `await` returns an unresolved future, not the value.
+- **All tool functions listed below are async and pre-defined in the namespace**: invoke them with `await` directly (no import needed), e.g. `result = await tool_name(arg=value)`. Calling without `await` returns an unresolved future, not the value.
 
 State is preserved between calls (REPL-style). Set `restart: true` to reset state.
 
