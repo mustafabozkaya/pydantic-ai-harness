@@ -212,14 +212,14 @@ async def test_run_code_executes_call_through_monty() -> None:
     assert result.return_value == {'output': '5\n'}
 
     # Nested tool calls are recorded as ToolCallPart/ToolReturnPart pairs in metadata.
-    nested = result.metadata['tool_call_parts']
-    assert len(nested) == 2  # one call + one return
-    assert nested[0].tool_name == 'add'
-    assert nested[0].args == {'a': 2, 'b': 3}
-    assert nested[0].tool_call_id == 'code_mode_1'
-    assert nested[1].tool_name == 'add'
-    assert nested[1].content == 5
-    assert nested[1].tool_call_id == 'code_mode_1'
+    # Nested tool calls/returns are recorded as dicts keyed by tool_call_id.
+    calls = result.metadata['tool_calls']
+    returns = result.metadata['tool_returns']
+    assert list(calls.keys()) == ['pai__1']
+    assert calls['pai__1'].tool_name == 'add'
+    assert calls['pai__1'].args == {'a': 2, 'b': 3}
+    assert returns['pai__1'].tool_name == 'add'
+    assert returns['pai__1'].content == 5
 
 
 async def test_run_code_executes_string_returning_tool_with_default_arg() -> None:
@@ -904,9 +904,8 @@ async def test_tool_returning_tool_return_is_unwrapped() -> None:
     assert result.return_value == {'result': 42}
 
     # The nested ToolReturnPart carries the ToolReturn metadata.
-    parts = result.metadata['tool_call_parts']
-    return_part = parts[1]
-    assert return_part.metadata == {'source': 'test'}
+    returns = result.metadata['tool_returns']
+    assert returns['pai__1'].metadata == {'source': 'test'}
 
 
 async def test_approval_required_surfaces_as_model_retry() -> None:

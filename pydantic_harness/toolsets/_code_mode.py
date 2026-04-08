@@ -216,18 +216,19 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
                 tools=tool.wrapped_tools,
             )
 
-        # Collect nested ToolCallPart/ToolReturnPart pairs so they can be attached
-        # as metadata on the run_code ToolReturnPart for observability.
-        nested_parts: list[ToolCallPart | ToolReturnPart] = []
+        # Collect nested tool calls and returns keyed by tool_call_id so they
+        # can be attached as metadata on the run_code ToolReturnPart.
+        nested_calls: dict[str, ToolCallPart] = {}
+        nested_returns: dict[str, ToolReturnPart] = {}
         call_counter = 0
 
         async def dispatch_tool_call(original_name: str, kwargs: dict[str, Any]) -> Any:
             """Dispatch a single tool call from inside the sandbox."""
             nonlocal call_counter
             call_counter += 1
-            tool_call_id = f'code_mode_{call_counter}'
+            tool_call_id = f'pai__{call_counter}'
             call_part = ToolCallPart(tool_name=original_name, args=kwargs, tool_call_id=tool_call_id)
-            nested_parts.append(call_part)
+            nested_calls[tool_call_id] = call_part
 
             try:
                 if tool_manager is not None:
@@ -251,13 +252,12 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
                 return_metadata = result.metadata
                 result = result.return_value
 
-            return_part = ToolReturnPart(
+            nested_returns[tool_call_id] = ToolReturnPart(
                 tool_name=original_name,
                 content=result,
                 tool_call_id=tool_call_id,
                 metadata=return_metadata,
             )
-            nested_parts.append(return_part)
 
             # Serialize to JSON-compatible form so Monty receives only plain data.
             return _TOOL_RETURN_ADAPTER.dump_python(result)
@@ -296,7 +296,10 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
             response['output'] = printed
         if result is not None:
             response['result'] = result
-        return ToolReturn(return_value=response, metadata={'tool_call_parts': nested_parts})
+        return ToolReturn(
+            return_value=response,
+            metadata={'tool_calls': nested_calls, 'tool_returns': nested_returns},
+        )
 
     def _partition_callable_tools(
         self, wrapped_tools: dict[str, ToolsetTool[AgentDepsT]]
