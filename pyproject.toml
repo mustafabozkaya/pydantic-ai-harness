@@ -25,7 +25,7 @@ classifiers = [
     'Typing :: Typed',
 ]
 dependencies = [
-    'pydantic-ai-slim>=1.76.0',
+    'pydantic-ai-slim>=1.78.0',
     "pydantic-monty>=0.0.9",
 ]
 
@@ -56,10 +56,6 @@ style = 'pep440'
 bump = true
 
 [tool.uv.sources]
-# Point at the `return-schema-unification` branch of pydantic-ai (PR #4964) so we
-# can consume the new `ToolDefinition.function_signature` field for code mode.
-# Drop this once the PR lands and a release ships.
-pydantic-ai-slim = { git = 'https://github.com/pydantic/pydantic-ai.git', branch = 'return-schema-unification', subdirectory = 'pydantic_ai_slim' }
 # Use Monty `main` so we get `MontyRepl.feed_run_async()` (the deprecated
 # `run_repl_async` helper still works on 0.0.9 but the new direct method is the
 # supported path going forward). Drop this once the next monty release ships.
