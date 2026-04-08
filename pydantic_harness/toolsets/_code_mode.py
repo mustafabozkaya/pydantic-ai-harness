@@ -236,9 +236,7 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
                     result = await tool_manager.handle_call(call_part, wrap_validation_errors=False)
                 else:
                     # Direct dispatch for tests without an agent (ctx.tool_manager is None).
-                    result = await self.wrapped.call_tool(
-                        original_name, kwargs, ctx, tool.wrapped_tools[original_name]
-                    )
+                    result = await self.wrapped.call_tool(original_name, kwargs, ctx, tool.wrapped_tools[original_name])
             except (CallDeferred, ApprovalRequired) as e:
                 raise UserError(
                     'Tool approval and deferral are not supported in code mode. '
