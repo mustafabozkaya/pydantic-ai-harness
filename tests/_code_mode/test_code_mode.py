@@ -14,7 +14,6 @@ import pytest
 from pydantic_ai import (
     AbstractToolset,
     Agent,
-    CombinedToolset,
     RunContext,
     Tool,
     ToolDefinition,
@@ -28,11 +27,11 @@ from pydantic_core import SchemaValidator, core_schema
 from pydantic_monty import Monty, MontyRepl, MontyTypingError
 from typing_extensions import TypedDict
 
-from pydantic_harness.capabilities import CodeMode
+from pydantic_harness import CodeMode
 from pydantic_harness.toolsets import CodeModeToolset
-from pydantic_harness.toolsets.code_mode.run_code import (
-    _PrintCapture,  # pyright: ignore[reportPrivateUsage]
-    _sanitize_tool_name,  # pyright: ignore[reportPrivateUsage]
+from pydantic_harness.toolsets._code_mode.run_code import (  # pyright: ignore[reportPrivateUsage]
+    _PrintCapture,
+    _sanitize_tool_name,
 )
 
 pytestmark = pytest.mark.anyio
@@ -458,7 +457,7 @@ async def test_filter_keeps_rejected_tools_native() -> None:
     """A callable filter sandboxes accepted tools and leaves the rest visible to the model."""
     capability = CodeMode[None](tools=lambda ctx, td: td.name == 'add')
     wrapper = capability.get_wrapper_toolset(_build_function_toolset(add, greet))
-    assert isinstance(wrapper, CombinedToolset)
+    assert isinstance(wrapper, CodeModeToolset)
 
     tools = await wrapper.get_tools(build_run_context(None))
     assert sorted(tools.keys()) == ['greet', 'run_code']
@@ -474,7 +473,7 @@ async def test_filter_excluding_everything_yields_run_code_with_no_functions() -
     """A filter that rejects every tool produces a `run_code` with no functions block."""
     capability = CodeMode[None](tools=lambda ctx, td: False)
     wrapper = capability.get_wrapper_toolset(_build_function_toolset(add, greet))
-    assert isinstance(wrapper, CombinedToolset)
+    assert isinstance(wrapper, CodeModeToolset)
 
     tools = await wrapper.get_tools(build_run_context(None))
     assert sorted(tools.keys()) == ['add', 'greet', 'run_code']
@@ -493,7 +492,7 @@ async def test_filter_uses_run_context_for_dynamic_decisions() -> None:
         return td.name == 'add'
 
     wrapper = CodeMode[None](tools=filter_func).get_wrapper_toolset(_build_function_toolset(add, greet))
-    assert isinstance(wrapper, CombinedToolset)
+    assert isinstance(wrapper, CodeModeToolset)
     await wrapper.get_tools(build_run_context(None, run_step=7))
     assert 7 in seen_steps
 
@@ -551,10 +550,10 @@ async def test_conflicting_typed_dicts_get_tool_name_prefix() -> None:
     tools = await wrapper.get_tools(ctx)
     description = tools['run_code'].tool_def.description
     assert description is not None
-    # First-encountered `Address` keeps its bare name, the second is prefixed by its owning tool.
-    assert 'class Address(TypedDict):' in description
+    # Both conflicting `Address` types get tool-name prefixes.
+    assert 'class get_user_Address(TypedDict):' in description
     assert 'class get_company_Address(TypedDict):' in description
-    assert 'addr: Address' in description
+    assert 'addr: get_user_Address' in description
     assert 'addr: get_company_Address' in description
 
     # End-to-end through Monty: both tools are callable from inside the sandbox.
@@ -590,7 +589,7 @@ async def test_deferred_tools_are_dropped_with_one_time_warning() -> None:
     assert isinstance(wrapper, CodeModeToolset)
 
     ctx = build_run_context(None)
-    with pytest.warns(UserWarning, match=r"deferred tool 'later'"):
+    with pytest.warns(UserWarning, match=r"tool 'later' uses deferred loading"):
         tools = await wrapper.get_tools(ctx)
 
     description = tools['run_code'].tool_def.description
@@ -784,7 +783,7 @@ async def test_sanitized_name_collision_warns_and_drops_second() -> None:
     assert isinstance(wrapper, CodeModeToolset)
 
     ctx = build_run_context(None)
-    with pytest.warns(UserWarning, match=r"tool 'get.weather' sanitizes to 'get_weather'"):
+    with pytest.warns(UserWarning, match=r"tool 'get\.weather'.*collides with 'get-weather'"):
         tools = await wrapper.get_tools(ctx)
 
     description = tools['run_code'].tool_def.description
@@ -811,7 +810,7 @@ async def test_sanitized_name_collision_with_native_tool() -> None:
     assert isinstance(wrapper, CodeModeToolset)
 
     ctx = build_run_context(None)
-    with pytest.warns(UserWarning, match=r"tool 'get-weather' sanitizes to 'get_weather'.*collides with 'get_weather'"):
+    with pytest.warns(UserWarning, match=r"tool 'get-weather'.*collides with 'get_weather'"):
         tools = await wrapper.get_tools(ctx)
 
     description = tools['run_code'].tool_def.description

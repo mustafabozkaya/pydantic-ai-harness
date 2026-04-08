@@ -1,3 +1,5 @@
-"""Agent harness for composable, reusable AI agent capabilities, built on Pydantic AI."""
+"""Agent harness for composable, reusable AI agent capabilities, for Pydantic AI."""
 
-__all__: list[str] = []
+from .capabilities.code_mode import CodeMode
+
+__all__ = ['CodeMode']

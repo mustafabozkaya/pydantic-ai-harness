@@ -1,5 +1,5 @@
-"""Toolsets shipped by the harness, including the code-mode toolset."""
+"""Toolsets shipped by the harness."""
 
-from .code_mode.run_code import CodeModeToolset
+from ._code_mode.run_code import CodeModeToolset
 
 __all__ = ['CodeModeToolset']

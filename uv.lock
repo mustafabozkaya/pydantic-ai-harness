@@ -681,8 +681,8 @@ wheels = [
 
 [[package]]
 name = "pydantic-ai-slim"
-version = "1.76.1.dev59+2a3a1f35"
-source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=return-schema-unification#2a3a1f35c47a2e96d786c51427b1fb531316e434" }
+version = "1.76.1.dev64+641530a7"
+source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=return-schema-unification#641530a78c3faaaf8e4ea54bba03cadf20e3b6a5" }
 dependencies = [
     { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
     { name = "genai-prices" },
@@ -814,8 +814,8 @@ wheels = [
 
 [[package]]
 name = "pydantic-graph"
-version = "1.76.1.dev59+2a3a1f35"
-source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_graph&branch=return-schema-unification#2a3a1f35c47a2e96d786c51427b1fb531316e434" }
+version = "1.76.1.dev64+641530a7"
+source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_graph&branch=return-schema-unification#641530a78c3faaaf8e4ea54bba03cadf20e3b6a5" }
 dependencies = [
     { name = "httpx" },
     { name = "logfire-api" },
@@ -827,7 +827,6 @@ dependencies = [
 name = "pydantic-harness"
 source = { editable = "." }
 dependencies = [
-    { name = "logfire", extra = ["httpx"] },
     { name = "pydantic-ai-slim" },
     { name = "pydantic-monty" },
 ]
@@ -836,6 +835,7 @@ dependencies = [
 dev = [
     { name = "anyio", extra = ["trio"] },
     { name = "coverage" },
+    { name = "logfire", extra = ["httpx"] },
     { name = "pytest" },
     { name = "pytest-anyio" },
 ]
@@ -846,7 +846,6 @@ lint = [
 
 [package.metadata]
 requires-dist = [
-    { name = "logfire", extras = ["httpx"], specifier = ">=4.31.0" },
     { name = "pydantic-ai-slim", git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=return-schema-unification" },
     { name = "pydantic-monty", git = "https://github.com/pydantic/monty.git?subdirectory=crates%2Fmonty-python&branch=main" },
 ]
@@ -855,6 +854,7 @@ requires-dist = [
 dev = [
     { name = "anyio", extras = ["trio"] },
     { name = "coverage" },
+    { name = "logfire", extras = ["httpx"], specifier = ">=4.31.0" },
     { name = "pytest" },
     { name = "pytest-anyio" },
 ]

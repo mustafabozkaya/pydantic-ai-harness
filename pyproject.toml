@@ -25,7 +25,6 @@ classifiers = [
     'Typing :: Typed',
 ]
 dependencies = [
-    "logfire[httpx]>=4.31.0",
     'pydantic-ai-slim>=1.76.0',
     "pydantic-monty>=0.0.9",
 ]
@@ -41,6 +40,7 @@ dev = [
     'anyio[trio]',
     'pytest-anyio',
     'coverage',
+    'logfire[httpx]>=4.31.0',
 ]
 lint = [
     'ruff>=0.14',

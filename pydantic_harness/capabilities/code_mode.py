@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from pydantic_ai import AbstractToolset, CombinedToolset, FilteredToolset, RunContext, ToolDefinition
+from pydantic_ai import AbstractToolset, RunContext
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.tools import AgentDepsT, ToolSelector, matches_tool_selector
+from pydantic_ai.tools import AgentDepsT, ToolSelector
 
 from pydantic_harness.toolsets import CodeModeToolset
 
@@ -16,7 +16,7 @@ class CodeMode(AbstractCapability[AgentDepsT]):
     """Capability that exposes selected tools as callables inside a `run_code` sandbox.
 
     By default (`tools='all'`) every tool the agent has is wrapped behind a single
-    `run_code` tool — the model writes Python that calls them as functions instead
+    `run_code` tool -- the model writes Python that calls them as functions instead
     of issuing tool calls directly.
 
     Pass a list of tool names or a callable predicate to `tools` to split the
@@ -25,7 +25,7 @@ class CodeMode(AbstractCapability[AgentDepsT]):
 
     ```python
     from pydantic_ai import Agent
-    from pydantic_harness.capabilities import CodeMode
+    from pydantic_harness import CodeMode
 
     # Sandbox all tools
     agent = Agent('openai:gpt-5', capabilities=[CodeMode()])
@@ -38,25 +38,15 @@ class CodeMode(AbstractCapability[AgentDepsT]):
     tools: ToolSelector[AgentDepsT] = field(default='all')
     """Which wrapped tools should be sandboxed inside `run_code`.
 
-    - ``'all'`` (default): every tool the agent has is sandboxed.
-    - ``Sequence[str]``: only tools whose names are listed are sandboxed.
-    - Callable ``(ctx, tool_def) -> bool | Awaitable[bool]``: tools where the
-      callable returns ``True`` are sandboxed; the rest stay as native tool calls.
+    - `'all'` (default): every tool the agent has is sandboxed.
+    - `Sequence[str]`: only tools whose names are listed are sandboxed.
+    - Callable `(ctx, tool_def) -> bool | Awaitable[bool]`: tools where the
+      callable returns `True` are sandboxed; the rest stay as native tool calls.
     """
+
+    max_retries: int = 3
+    """Maximum number of retries for the `run_code` tool (syntax errors count as retries)."""
 
     def get_wrapper_toolset(self, toolset: AbstractToolset[AgentDepsT]) -> AbstractToolset[AgentDepsT] | None:
         """Wrap the agent's assembled toolset, splitting it into native + sandboxed subsets if needed."""
-        if self.tools == 'all':
-            return CodeModeToolset(wrapped=toolset)
-
-        selector = self.tools
-
-        async def _sandboxed(ctx: RunContext[AgentDepsT], td: ToolDefinition) -> bool:
-            return await matches_tool_selector(selector, ctx, td)
-
-        async def _native(ctx: RunContext[AgentDepsT], td: ToolDefinition) -> bool:
-            return not await matches_tool_selector(selector, ctx, td)
-
-        sandboxed = FilteredToolset(wrapped=toolset, filter_func=_sandboxed)
-        native = FilteredToolset(wrapped=toolset, filter_func=_native)
-        return CombinedToolset([native, CodeModeToolset(wrapped=sandboxed)])
+        return CodeModeToolset(wrapped=toolset, tool_selector=self.tools, max_retries=self.max_retries)

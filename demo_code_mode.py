@@ -18,7 +18,7 @@ import sys
 from pydantic_ai import Agent
 from pydantic_ai.messages import ToolCallPart
 
-from pydantic_harness.capabilities import CodeMode
+from pydantic_harness import CodeMode
 
 try:
     import logfire
