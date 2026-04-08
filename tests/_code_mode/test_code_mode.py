@@ -215,11 +215,11 @@ async def test_run_code_executes_call_through_monty() -> None:
     # Nested tool calls/returns are recorded as dicts keyed by tool_call_id.
     calls = result.metadata['tool_calls']
     returns = result.metadata['tool_returns']
-    assert list(calls.keys()) == ['pyd_ai_code_mode_1']
-    assert calls['pyd_ai_code_mode_1'].tool_name == 'add'
-    assert calls['pyd_ai_code_mode_1'].args == {'a': 2, 'b': 3}
-    assert returns['pyd_ai_code_mode_1'].tool_name == 'add'
-    assert returns['pyd_ai_code_mode_1'].content == 5
+    assert list(calls.keys()) == ['pyd_ai_code_mode__1']
+    assert calls['pyd_ai_code_mode__1'].tool_name == 'add'
+    assert calls['pyd_ai_code_mode__1'].args == {'a': 2, 'b': 3}
+    assert returns['pyd_ai_code_mode__1'].tool_name == 'add'
+    assert returns['pyd_ai_code_mode__1'].content == 5
 
 
 async def test_run_code_executes_string_returning_tool_with_default_arg() -> None:
@@ -905,7 +905,7 @@ async def test_tool_returning_tool_return_is_unwrapped() -> None:
 
     # The nested ToolReturnPart carries the ToolReturn metadata.
     returns = result.metadata['tool_returns']
-    assert returns['pyd_ai_code_mode_1'].metadata == {'source': 'test'}
+    assert returns['pyd_ai_code_mode__1'].metadata == {'source': 'test'}
 
 
 async def test_approval_required_surfaces_as_model_retry() -> None:
