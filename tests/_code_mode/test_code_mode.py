@@ -1572,7 +1572,7 @@ class TestToolSearchIntegration:
         """CodeMode declares ordering: outermost position, wraps ToolSearch."""
         from pydantic_ai.capabilities._tool_search import ToolSearch
 
-        ordering = CodeMode.get_ordering()
+        ordering = CodeMode().get_ordering()
         assert ordering is not None
         assert ordering.position == 'outermost'
         assert ToolSearch in ordering.wraps
