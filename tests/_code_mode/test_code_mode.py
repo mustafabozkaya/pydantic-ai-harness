@@ -1489,6 +1489,66 @@ class TestCodeMode:
             )
             assert result.return_value == 30
 
+    async def test_global_sequential_overrides_per_tool_sequential(self) -> None:
+        """When global sequential mode is active AND a tool has `sequential=True`,
+        the tool is deferred (not resolved inline) and handled via FutureSnapshot."""
+        from dataclasses import replace as dc_replace
+
+        from pydantic_ai.tool_manager import ToolManager
+
+        class _SeqToolset(AbstractToolset[None]):
+            def __init__(self) -> None:
+                self._inner = _build_function_toolset(add)
+
+            @property
+            def id(self) -> str | None:
+                return None  # pragma: no cover
+
+            async def get_tools(self, ctx: RunContext[None]) -> dict[str, ToolsetTool[None]]:
+                tools = await self._inner.get_tools(ctx)
+                return {n: dc_replace(t, tool_def=dc_replace(t.tool_def, sequential=True)) for n, t in tools.items()}
+
+            async def call_tool(
+                self, name: str, tool_args: dict[str, Any], ctx: RunContext[None], tool: ToolsetTool[None]
+            ) -> Any:
+                return await self._inner.call_tool(name, tool_args, ctx, tool)
+
+        seq_wrapper = CodeModeToolset[None](wrapped=_SeqToolset(), tool_selector='all')
+        ctx = await build_ctx(None, seq_wrapper)
+
+        with ToolManager.parallel_execution_mode('sequential'):
+            tools = await seq_wrapper.get_tools(ctx)
+            run_code = tools['run_code']
+
+            # Per-tool sequential renders as `def`, but global mode uses deferred path.
+            desc = run_code.tool_def.description or ''
+            assert 'def add(' in desc
+            assert 'async def add(' not in desc
+
+            # The tool still works — global sequential resolves at FutureSnapshot.
+            result = await seq_wrapper.call_tool('run_code', {'code': 'add(a=5, b=7)'}, ctx, run_code)
+            assert result.return_value == 12
+
+    async def test_restart_with_invalid_code_clears_repl_for_retry(self) -> None:
+        """When `restart=True` and type checking fails, the REPL is cleared so
+        the next retry still gets type-checked on a fresh REPL."""
+        wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        run_code = tools['run_code']
+
+        # First call succeeds — REPL has state.
+        await wrapper.call_tool('run_code', {'code': 'x = await add(a=1, b=2)'}, ctx, run_code)
+
+        # Restart with bad code — type checking catches it.
+        with pytest.raises(ModelRetry, match='Type error'):
+            await wrapper.call_tool('run_code', {'code': "await add(a='bad', b=3)", 'restart': True}, ctx, run_code)
+
+        # Retry without restart — should still be type-checked (REPL was cleared).
+        with pytest.raises(ModelRetry, match='Type error'):
+            await wrapper.call_tool('run_code', {'code': "await add(a='bad', b=3)"}, ctx, run_code)
+
     # ---------------------------------------------------------------------------
     # Internal helpers
     # ---------------------------------------------------------------------------

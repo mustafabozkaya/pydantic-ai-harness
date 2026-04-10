@@ -276,10 +276,11 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
         code = tool_args['code']
         restart = tool_args.get('restart', False)
 
-        # Determine freshness *before* creating the REPL so that if type
-        # checking fails (raises ModelRetry), the REPL stays None and the
-        # next retry still gets type-checked.
-        fresh_repl = self._repl is None or restart
+        # Clear the REPL on restart so that if type checking fails, the
+        # next retry still gets fresh_repl=True and is type-checked again.
+        if restart:
+            self._repl = None
+        fresh_repl = self._repl is None
 
         callable_defs = tool.callable_defs
         sanitized_to_original = tool.sanitized_to_original
@@ -666,9 +667,10 @@ async def _handle_function_snapshot(
 
     original_name = sanitized_to_original.get(fn_name, fn_name)
 
-    if fn_name in sequential_tools and not global_sequential:
-        # Per-tool sequential: await pending parallel tasks first (barrier),
-        # then dispatch inline and resume with the result immediately.
+    if fn_name in sequential_tools:
+        # Per-tool sequential: rendered as `def` (sync), so must resolve inline —
+        # the sandbox code doesn't `await` the result. Await pending parallel
+        # tasks first (barrier) to maintain ordering.
         for cid in list(pending):
             pre_resolved[cid] = await _resolve_coro(pending.pop(cid))
         outcome = await _resolve_coro(dispatch(original_name, snapshot.kwargs))
