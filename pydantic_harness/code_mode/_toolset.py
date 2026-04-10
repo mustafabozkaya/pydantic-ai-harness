@@ -622,6 +622,8 @@ async def _execution_loop(
         for item in pending.values():  # pragma: no cover
             if isinstance(item, asyncio.Task):
                 item.cancel()
+            else:
+                item.close()  # Close bare coroutines to avoid RuntimeWarning
 
     return monty_state
 
