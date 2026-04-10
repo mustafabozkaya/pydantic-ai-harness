@@ -147,7 +147,7 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
 
     tool_selector: ToolSelector[AgentDepsT] = 'all'
     """Which wrapped tools to sandbox inside `run_code`. Non-matching tools
-    are exposed as native tool calls."""
+    are exposed as native tools."""
 
     max_retries: int = 3
     """Maximum number of retries for the `run_code` tool (syntax errors count as retries)."""
@@ -195,7 +195,7 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
         callable_defs, sanitized_to_original, native_fallbacks = self._partition_callable_tools(sandboxed_tools)
 
         # Tools that matched the selector but can't run in the sandbox (deferred
-        # execution, deferred loading) are promoted back to native tool calls so
+        # execution, deferred loading) are promoted back to native tools so
         # they remain visible to the model.
         for name in native_fallbacks:
             native_tools[name] = sandboxed_tools[name]
@@ -397,7 +397,7 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
         Returns:
             A tuple of `(callable_defs, sanitized_to_original, native_fallbacks)`
             where `native_fallbacks` contains original tool names that should
-            be exposed as native tool calls instead of being sandboxed.
+            be exposed as native tools instead of being sandboxed.
         """
         callable_defs: dict[str, ToolDefinition] = {}
         sanitized_to_original: dict[str, str] = {}
@@ -410,7 +410,7 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
                     warnings.warn(
                         f'CodeMode: tool {name!r} requires deferred execution '
                         f'(kind={td.kind!r}) and cannot be called from inside the '
-                        f'sandbox; it will be exposed as a native tool call instead.',
+                        f'sandbox; it will be exposed as a native tool instead.',
                         UserWarning,
                         stacklevel=2,
                     )
@@ -422,7 +422,7 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
                     warnings.warn(
                         f'CodeMode: tool {name!r} uses deferred loading (tool search) '
                         f'and cannot be pre-registered in the sandbox; it will be '
-                        f'exposed as a native tool call instead.',
+                        f'exposed as a native tool instead.',
                         UserWarning,
                         stacklevel=2,
                     )
