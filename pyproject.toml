@@ -58,6 +58,9 @@ lint = [
     'pyright>=1.1.408',
 ]
 
+[tool.uv.sources]
+pydantic-ai-slim = { git = 'https://github.com/pydantic/pydantic-ai.git', branch = 'tool-search-cap', subdirectory = 'pydantic_ai_slim' }
+
 [tool.hatch.version]
 source = 'uv-dynamic-versioning'
 

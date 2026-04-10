@@ -1040,8 +1040,8 @@ wheels = [
 
 [[package]]
 name = "pydantic-ai-slim"
-version = "1.78.0"
-source = { registry = "https://pypi.org/simple" }
+version = "1.79.1.dev5+acbfe629"
+source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=tool-search-cap#acbfe629c1a75b0173e04e9ca832ad1ab536925a" }
 dependencies = [
     { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
     { name = "genai-prices" },
@@ -1051,10 +1051,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-graph" },
     { name = "typing-inspection" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/85/84/4cf98c41a2019a5c5ed6aa5d5fa2bbc8b70b152b527c56d27dabbeaeb75c/pydantic_ai_slim-1.78.0.tar.gz", hash = "sha256:97c6467a6bb09f61fd48cd828db066204ae77419d14a4edf47f90f72d06ab11f", size = 531385, upload-time = "2026-04-08T05:20:36.291Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/91/487992a441c03f16525885ee541083f66f579500edd7aa8b838f3296455f/pydantic_ai_slim-1.78.0-py3-none-any.whl", hash = "sha256:36f88bab6016186b958363ca1254741999df276322d7066dd69793dcb2134b66", size = 680002, upload-time = "2026-04-08T05:20:27.508Z" },
 ]
 
 [package.optional-dependencies]
@@ -1188,17 +1184,13 @@ wheels = [
 
 [[package]]
 name = "pydantic-graph"
-version = "1.78.0"
-source = { registry = "https://pypi.org/simple" }
+version = "1.79.1.dev5+acbfe629"
+source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_graph&branch=tool-search-cap#acbfe629c1a75b0173e04e9ca832ad1ab536925a" }
 dependencies = [
     { name = "httpx" },
     { name = "logfire-api" },
     { name = "pydantic" },
     { name = "typing-inspection" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/30/e4/eb52021f43f2ac495955af19219c1ab261d707bbd15f4dc229079c2276d4/pydantic_graph-1.78.0.tar.gz", hash = "sha256:dd627e37cb3adaf8c95cca6a4b33e0d1b7fc9bed075dc3b8ad5df2c2a3cb432b", size = 58682, upload-time = "2026-04-08T05:20:39.288Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/47/97/e3dd1a1c6f6b9c104c844c1a2383361a831d1b027c99c0ac1a20544f0b13/pydantic_graph-1.78.0-py3-none-any.whl", hash = "sha256:0302835f46da3ee70ba3602a4d886c41a76fa8750f23f4257b968163ba4bb89f", size = 72500, upload-time = "2026-04-08T05:20:31.237Z" },
 ]
 
 [[package]]
@@ -1235,9 +1227,9 @@ lint = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pydantic-ai-slim", specifier = ">=1.78.0" },
-    { name = "pydantic-ai-slim", extras = ["dbos", "mcp"], marker = "extra == 'dbos'" },
-    { name = "pydantic-ai-slim", extras = ["temporal"], marker = "extra == 'temporal'" },
+    { name = "pydantic-ai-slim", git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=tool-search-cap" },
+    { name = "pydantic-ai-slim", extras = ["dbos", "mcp"], marker = "extra == 'dbos'", git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=tool-search-cap" },
+    { name = "pydantic-ai-slim", extras = ["temporal"], marker = "extra == 'temporal'", git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=tool-search-cap" },
     { name = "pydantic-monty", marker = "extra == 'code-mode'", specifier = ">=0.0.10" },
 ]
 provides-extras = ["code-mode", "dbos", "temporal"]

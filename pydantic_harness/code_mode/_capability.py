@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from pydantic_ai import AbstractToolset
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
+from pydantic_ai.capabilities._tool_search import ToolSearch as _ToolSearch
 from pydantic_ai.tools import AgentDepsT, ToolSelector
 
 from pydantic_harness.code_mode._toolset import CodeModeToolset
@@ -46,6 +47,11 @@ class CodeMode(AbstractCapability[AgentDepsT]):
 
     max_retries: int = 3
     """Maximum number of retries for the `run_code` tool (syntax errors count as retries)."""
+
+    @classmethod
+    def get_ordering(cls) -> CapabilityOrdering:
+        """CodeMode wraps around ToolSearch so that search_tools stays native."""
+        return CapabilityOrdering(position='outermost', wraps=[_ToolSearch])
 
     def get_wrapper_toolset(self, toolset: AbstractToolset[AgentDepsT]) -> AbstractToolset[AgentDepsT] | None:
         """Wrap the agent's assembled toolset, splitting it into native + sandboxed subsets if needed."""
