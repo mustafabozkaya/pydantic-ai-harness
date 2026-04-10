@@ -90,7 +90,6 @@ quote-style = 'single'
 [tool.pyright]
 pythonVersion = '3.10'
 typeCheckingMode = 'strict'
-extraPaths = ['../monty/crates/monty-python/python']
 exclude = ['template', '.venv']
 executionEnvironments = [
     { root = 'tests', reportPrivateUsage = false },
