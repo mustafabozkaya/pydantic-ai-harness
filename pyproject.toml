@@ -32,6 +32,12 @@ dependencies = [
 code-mode = [
     'pydantic-monty>=0.0.10',
 ]
+temporal = [
+    'pydantic-ai-slim[temporal]',
+]
+dbos = [
+    'pydantic-ai-slim[dbos]',
+]
 
 [project.urls]
 Homepage = 'https://github.com/pydantic/pydantic-harness'
@@ -101,22 +107,26 @@ executionEnvironments = [
 [tool.pytest.ini_options]
 testpaths = ['tests']
 xfail_strict = true
-filterwarnings = ['error']
+filterwarnings = [
+    'error',
+    # DBOS's run_sync triggers this on Python 3.12+ — not our code.
+    'ignore:There is no current event loop:DeprecationWarning',
+]
 anyio_mode = 'auto'
 
 [tool.coverage.run]
 branch = true
 source = ['pydantic_harness', 'tests']
-# Track coverage in worker threads — `pydantic_monty.run_repl_async` runs the
-# Rust REPL on a `ThreadPoolExecutor`, so without this every external function
-# the sandbox dispatches to is invisible to coverage.
-concurrency = ['thread']
+
+[tool.coverage.paths]
+source = ['.', '/home/runner/work/pydantic-harness/pydantic-harness']
 
 [tool.coverage.report]
 fail_under = 100
 show_missing = true
 exclude_lines = [
     'pragma: no cover',
+    'pragma: lax no cover',
     'assert_never',
     'if TYPE_CHECKING:',
 ]

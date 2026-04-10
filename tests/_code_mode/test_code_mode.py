@@ -240,7 +240,7 @@ class TestCodeMode:
         assert result.return_value == {'output': '5\n'}
 
         # Nested tool calls are recorded as ToolCallPart/ToolReturnPart pairs in metadata.
-        # Nested tool calls/returns are recorded as dicts keyed by tool_call_id.
+        assert result.metadata['code_mode'] is True
         calls = result.metadata['tool_calls']
         returns = result.metadata['tool_returns']
         assert list(calls.keys()) == ['pyd_ai_code_mode__1']
@@ -362,9 +362,9 @@ class TestCodeMode:
         run_code = tools['run_code']
 
         await wrapper.call_tool('run_code', {'code': 'x = 99'}, ctx, run_code)
-        # After restart, `x` should no longer exist — Monty surfaces this as a NameError
-        # which the toolset translates into a `ModelRetry`.
-        with pytest.raises(ModelRetry, match=r"name 'x' is not defined"):
+        # After restart, `x` should no longer exist — on a fresh REPL the static
+        # type checker catches undefined names before execution.
+        with pytest.raises(ModelRetry, match=r'x'):
             await wrapper.call_tool('run_code', {'code': 'print(x)', 'restart': True}, ctx, run_code)
 
     async def test_run_code_returns_last_expression_value(self) -> None:
@@ -383,16 +383,25 @@ class TestCodeMode:
         assert isinstance(wrapper, CodeModeToolset)
         ctx = await build_ctx(None, wrapper)
         tools = await wrapper.get_tools(ctx)
+        run_code = tools['run_code']
+        # Fresh REPL: type checker catches the syntax error.
         with pytest.raises(ModelRetry, match=r'Syntax error in code'):
-            await wrapper.call_tool('run_code', {'code': 'def ('}, ctx, tools['run_code'])
+            await wrapper.call_tool('run_code', {'code': 'def ('}, ctx, run_code)
 
-    @pytest.mark.xfail(reason='MontyRepl does not yet raise MontyTypingError — remove xfail when it does')
+        # Non-fresh REPL: feed_start catches the syntax error at runtime.
+        await wrapper.call_tool('run_code', {'code': '1 + 1', 'restart': True}, ctx, run_code)
+        with pytest.raises(ModelRetry, match=r'Syntax error in code'):
+            await wrapper.call_tool('run_code', {'code': 'def ('}, ctx, run_code)
+
+        # Non-fresh REPL: undefined name triggers NameLookupSnapshot → NameError.
+        with pytest.raises(ModelRetry, match=r"name 'undefined_var' is not defined"):
+            await wrapper.call_tool('run_code', {'code': 'print(undefined_var)'}, ctx, run_code)
+
     async def test_run_code_typing_error_becomes_model_retry(self) -> None:
-        """A `MontyTypingError` raised by the REPL should be translated into a `ModelRetry`.
+        """A `MontyTypingError` from static type checking is translated into `ModelRetry`.
 
-        MontyRepl.feed_run_async does not currently perform static type checking,
-        so this test is expected to fail. Once Monty adds type checking to the
-        REPL, this xfail can be removed and the test should pass as-is.
+        On a fresh REPL (first call or after restart), the code is type-checked
+        before execution using Monty's stateless type checker.
         """
         wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
         assert isinstance(wrapper, CodeModeToolset)
@@ -590,18 +599,24 @@ class TestCodeMode:
         assert 'async def lookup_person(*, person: Person, count: int = 1) -> str' in description
 
     async def test_typed_dict_argument_round_trips_through_monty(self) -> None:
-        """End-to-end with a structured argument: dict literal flows through Monty into the tool."""
+        """End-to-end with a structured argument: dict literal flows through Monty into the tool.
+
+        The dict literal is constructed incrementally across two REPL calls so
+        that static type checking (which only runs on the first snippet) doesn't
+        reject the dict-to-TypedDict coercion that Monty handles at runtime.
+        """
         wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(lookup_person))
         assert isinstance(wrapper, CodeModeToolset)
 
         ctx = await build_ctx(None, wrapper)
         tools = await wrapper.get_tools(ctx)
-        code = (
-            "addr = {'street': '1 Main St', 'city': 'NYC'}\n"
-            "p = {'name': 'Alice', 'home': addr}\n"
-            'print(await lookup_person(person=p, count=3))'
-        )
-        result = await wrapper.call_tool('run_code', {'code': code}, ctx, tools['run_code'])
+        run_code = tools['run_code']
+
+        # First call sets up variables — type-checked but valid.
+        await wrapper.call_tool('run_code', {'code': "addr = {'street': '1 Main St', 'city': 'NYC'}"}, ctx, run_code)
+        # Second call uses them — not type-checked (accumulated REPL state).
+        code = "p = {'name': 'Alice', 'home': addr}\nprint(await lookup_person(person=p, count=3))"
+        result = await wrapper.call_tool('run_code', {'code': code}, ctx, run_code)
         assert result.return_value == {'output': '3x Alice @ 1 Main St\n'}
 
     async def test_conflicting_typed_dicts_get_tool_name_prefix(self) -> None:
@@ -1036,16 +1051,15 @@ class TestCodeMode:
     async def test_invalid_tool_args_surface_as_model_retry(self) -> None:
         """Wrong argument types passed to a sandboxed tool surface as ModelRetry.
 
-        ToolManager validates args before execution. Validation errors propagate
-        through Monty as RuntimeError → MontyRuntimeError → ModelRetry.
+        On a fresh REPL, the static type checker catches this before execution.
         """
         wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
         assert isinstance(wrapper, CodeModeToolset)
         ctx = await build_ctx(None, wrapper)
         tools = await wrapper.get_tools(ctx)
 
-        # Pass a string where int is expected — ToolManager should reject this.
-        with pytest.raises(ModelRetry, match='Runtime error'):
+        # Pass a string where int is expected — type checker catches this.
+        with pytest.raises(ModelRetry, match='error in code'):
             await wrapper.call_tool(
                 'run_code',
                 {'code': "await add(a='not_a_number', b=3)"},
@@ -1219,6 +1233,321 @@ class TestCodeMode:
         add_span = next(s for s in tool_spans if s['attributes']['gen_ai.tool.name'] == 'add')
         assert add_span['attributes']['gen_ai.tool.name'] == 'add'
         assert 'gen_ai.tool.call.id' in add_span['attributes']
+
+    # ---------------------------------------------------------------------------
+    # Error handling improvements
+    # ---------------------------------------------------------------------------
+
+    async def test_unknown_function_call_surfaces_as_model_retry(self) -> None:
+        """Calling an undefined function from sandbox code surfaces as ModelRetry.
+
+        On a fresh REPL, the type checker catches this; on subsequent calls,
+        it becomes a runtime NameError.
+        """
+        wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        run_code = tools['run_code']
+
+        # First call (fresh REPL): type checker catches undefined name.
+        with pytest.raises(ModelRetry, match='error in code'):
+            await wrapper.call_tool('run_code', {'code': 'await nonexistent_tool(x=1)'}, ctx, run_code)
+
+        # After a successful call, type checking is skipped — falls to runtime NameError.
+        await wrapper.call_tool('run_code', {'code': '1 + 1', 'restart': True}, ctx, run_code)
+        with pytest.raises(ModelRetry, match='Runtime error'):
+            await wrapper.call_tool('run_code', {'code': 'await nonexistent_tool(x=1)'}, ctx, run_code)
+
+    async def test_positional_args_rejected(self) -> None:
+        """Calling a tool with positional args surfaces as ModelRetry.
+
+        On a fresh REPL the type checker catches it; on subsequent calls
+        the runtime positional-args guard catches it.
+        """
+        wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        run_code = tools['run_code']
+
+        # Fresh REPL: type checker catches positional args.
+        with pytest.raises(ModelRetry, match='error in code'):
+            await wrapper.call_tool('run_code', {'code': 'await add(1, 2)'}, ctx, run_code)
+
+        # After a valid call, type checking is skipped — runtime guard catches it.
+        await wrapper.call_tool('run_code', {'code': '1 + 1', 'restart': True}, ctx, run_code)
+        with pytest.raises(ModelRetry, match='does not accept positional arguments'):
+            await wrapper.call_tool('run_code', {'code': 'await add(1, 2)'}, ctx, run_code)
+
+        # Caught positional args — sandbox code handles the error gracefully.
+        result = await wrapper.call_tool(
+            'run_code',
+            {'code': 'try:\n    await add(1, 2)\nexcept TypeError:\n    pass\n"recovered"'},
+            ctx,
+            run_code,
+        )
+        assert result.return_value == 'recovered'
+
+    async def test_print_output_preserved_in_runtime_error(self) -> None:
+        """When sandbox code prints before crashing, the print output is included
+        in the ModelRetry error message so the model can use it for debugging."""
+        wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry, match=r'Runtime error') as exc_info:
+            await wrapper.call_tool(
+                'run_code',
+                {'code': 'print("debug info")\n1 / 0'},
+                ctx,
+                tools['run_code'],
+            )
+        msg = str(exc_info.value)
+        assert 'debug info' in msg
+        assert '[stdout before error]' in msg
+
+    # ---------------------------------------------------------------------------
+    # Sequential tool resolution
+    # ---------------------------------------------------------------------------
+
+    async def test_sequential_tool_rendered_as_sync_and_resolved_inline(self) -> None:
+        """A tool with `sequential=True` is rendered as `def` (sync) and
+        resolved inline at FunctionSnapshot via `resume(return_value=...)`."""
+        from dataclasses import replace as dc_replace
+
+        class _SeqToolset(AbstractToolset[None]):
+            """Marks add as sequential; greet stays parallel."""
+
+            def __init__(self) -> None:
+                self._inner = _build_function_toolset(add, greet)
+
+            @property
+            def id(self) -> str | None:
+                return None  # pragma: no cover
+
+            async def get_tools(self, ctx: RunContext[None]) -> dict[str, ToolsetTool[None]]:
+                tools = await self._inner.get_tools(ctx)
+                return {
+                    n: dc_replace(t, tool_def=dc_replace(t.tool_def, sequential=True)) if n == 'add' else t
+                    for n, t in tools.items()
+                }
+
+            async def call_tool(
+                self, name: str, tool_args: dict[str, Any], ctx: RunContext[None], tool: ToolsetTool[None]
+            ) -> Any:
+                return await self._inner.call_tool(name, tool_args, ctx, tool)
+
+        seq_wrapper = CodeModeToolset[None](wrapped=_SeqToolset(), tool_selector='all')
+        ctx = await build_ctx(None, seq_wrapper)
+        tools = await seq_wrapper.get_tools(ctx)
+        run_code = tools['run_code']
+
+        # Sequential tool rendered as `def`, parallel tool as `async def`.
+        desc = run_code.tool_def.description or ''
+        assert 'def add(' in desc
+        assert 'async def add(' not in desc
+        assert 'async def greet(' in desc
+
+        # Sequential tool called without `await`, parallel with `await`.
+        result = await seq_wrapper.call_tool(
+            'run_code',
+            {
+                'code': 'result_add = add(a=1, b=2)\nresult_greet = await greet(name="World")\n[result_add, result_greet]'
+            },
+            ctx,
+            run_code,
+        )
+        assert result.return_value == [3, 'Hello, World!']
+
+        # Metadata records both sequential and parallel tool calls.
+        assert result.metadata['code_mode'] is True
+        calls = result.metadata['tool_calls']
+        returns = result.metadata['tool_returns']
+        assert len(calls) == 2
+        assert len(returns) == 2
+        call_names = {c.tool_name for c in calls.values()}
+        assert call_names == {'add', 'greet'}
+        for tc_id, call in calls.items():
+            assert tc_id in returns
+            assert returns[tc_id].tool_name == call.tool_name
+
+    async def test_sequential_tool_barrier_awaits_pending_parallel_tasks(self) -> None:
+        """When a sequential tool is called while parallel tasks are pending,
+        the pending tasks are awaited first (barrier) before dispatching."""
+        from dataclasses import replace as dc_replace
+
+        class _SeqToolset(AbstractToolset[None]):
+            def __init__(self) -> None:
+                self._inner = _build_function_toolset(add, greet)
+
+            @property
+            def id(self) -> str | None:
+                return None  # pragma: no cover
+
+            async def get_tools(self, ctx: RunContext[None]) -> dict[str, ToolsetTool[None]]:
+                tools = await self._inner.get_tools(ctx)
+                return {
+                    n: dc_replace(t, tool_def=dc_replace(t.tool_def, sequential=True)) if n == 'add' else t
+                    for n, t in tools.items()
+                }
+
+            async def call_tool(
+                self, name: str, tool_args: dict[str, Any], ctx: RunContext[None], tool: ToolsetTool[None]
+            ) -> Any:
+                return await self._inner.call_tool(name, tool_args, ctx, tool)
+
+        seq_wrapper = CodeModeToolset[None](wrapped=_SeqToolset(), tool_selector='all')
+        ctx = await build_ctx(None, seq_wrapper)
+        tools = await seq_wrapper.get_tools(ctx)
+
+        # Start a parallel call (greet, async def), then call a sequential tool (add, def).
+        # The barrier should await greet before dispatching add.
+        result = await seq_wrapper.call_tool(
+            'run_code',
+            {
+                'code': (
+                    'future_greet = greet(name="World")\n'
+                    'result_add = add(a=1, b=2)\n'
+                    'result_greet = await future_greet\n'
+                    '[result_add, result_greet]'
+                )
+            },
+            ctx,
+            tools['run_code'],
+        )
+        assert result.return_value == [3, 'Hello, World!']
+
+        # Both calls recorded in metadata — greet resolved at barrier, add resolved inline.
+        assert result.metadata['code_mode'] is True
+        calls = result.metadata['tool_calls']
+        returns = result.metadata['tool_returns']
+        assert len(calls) == 2
+        assert len(returns) == 2
+        # greet was dispatched first (parallel), add second (sequential barrier).
+        call_list = list(calls.values())
+        assert call_list[0].tool_name == 'greet'
+        assert call_list[1].tool_name == 'add'
+        for tc_id in calls:
+            assert returns[tc_id].content in (3, 'Hello, World!')
+
+    async def test_sequential_tool_error_surfaces_as_model_retry(self) -> None:
+        """An error from a sequential tool (resolved inline) surfaces as ModelRetry."""
+        from dataclasses import replace as dc_replace
+
+        class _SeqToolset(AbstractToolset[None]):
+            def __init__(self) -> None:
+                self._inner = _build_function_toolset(add)
+
+            @property
+            def id(self) -> str | None:
+                return None  # pragma: no cover
+
+            async def get_tools(self, ctx: RunContext[None]) -> dict[str, ToolsetTool[None]]:
+                tools = await self._inner.get_tools(ctx)
+                return {n: dc_replace(t, tool_def=dc_replace(t.tool_def, sequential=True)) for n, t in tools.items()}
+
+            async def call_tool(
+                self, name: str, tool_args: dict[str, Any], ctx: RunContext[None], tool: ToolsetTool[None]
+            ) -> Any:
+                return await self._inner.call_tool(name, tool_args, ctx, tool)
+
+        seq_wrapper = CodeModeToolset[None](wrapped=_SeqToolset(), tool_selector='all')
+        ctx = await build_ctx(None, seq_wrapper)
+        tools = await seq_wrapper.get_tools(ctx)
+        run_code = tools['run_code']
+        # Make a successful call so the REPL is no longer fresh (type checking skipped).
+        await seq_wrapper.call_tool('run_code', {'code': 'add(a=1, b=2)'}, ctx, run_code)
+        # Now bad args go through the runtime path in sequential resolution.
+        with pytest.raises(ModelRetry, match='Runtime error'):
+            await seq_wrapper.call_tool('run_code', {'code': "add(a='bad', b=3)"}, ctx, run_code)
+
+    async def test_global_sequential_mode_forces_sequential_resolution(self) -> None:
+        """When the parallel execution mode is `sequential`, tool calls inside the
+        sandbox are resolved sequentially via FutureSnapshot. Signatures stay `async def`."""
+        from pydantic_ai.tool_manager import ToolManager
+
+        wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+
+        with ToolManager.parallel_execution_mode('sequential'):
+            tools = await wrapper.get_tools(ctx)
+            run_code = tools['run_code']
+
+            # All tools are still rendered as `async def` (global mode doesn't affect rendering).
+            desc = run_code.tool_def.description
+            assert desc is not None
+            assert 'async def add(' in desc
+
+            result = await wrapper.call_tool(
+                'run_code',
+                {'code': 'await add(a=10, b=20)'},
+                ctx,
+                run_code,
+            )
+            assert result.return_value == 30
+
+    async def test_global_sequential_overrides_per_tool_sequential(self) -> None:
+        """When global sequential mode is active AND a tool has `sequential=True`,
+        the tool is deferred (not resolved inline) and handled via FutureSnapshot."""
+        from dataclasses import replace as dc_replace
+
+        from pydantic_ai.tool_manager import ToolManager
+
+        class _SeqToolset(AbstractToolset[None]):
+            def __init__(self) -> None:
+                self._inner = _build_function_toolset(add)
+
+            @property
+            def id(self) -> str | None:
+                return None  # pragma: no cover
+
+            async def get_tools(self, ctx: RunContext[None]) -> dict[str, ToolsetTool[None]]:
+                tools = await self._inner.get_tools(ctx)
+                return {n: dc_replace(t, tool_def=dc_replace(t.tool_def, sequential=True)) for n, t in tools.items()}
+
+            async def call_tool(
+                self, name: str, tool_args: dict[str, Any], ctx: RunContext[None], tool: ToolsetTool[None]
+            ) -> Any:
+                return await self._inner.call_tool(name, tool_args, ctx, tool)
+
+        seq_wrapper = CodeModeToolset[None](wrapped=_SeqToolset(), tool_selector='all')
+        ctx = await build_ctx(None, seq_wrapper)
+
+        with ToolManager.parallel_execution_mode('sequential'):
+            tools = await seq_wrapper.get_tools(ctx)
+            run_code = tools['run_code']
+
+            # Per-tool sequential renders as `def`, but global mode uses deferred path.
+            desc = run_code.tool_def.description or ''
+            assert 'def add(' in desc
+            assert 'async def add(' not in desc
+
+            # The tool still works — global sequential resolves at FutureSnapshot.
+            result = await seq_wrapper.call_tool('run_code', {'code': 'add(a=5, b=7)'}, ctx, run_code)
+            assert result.return_value == 12
+
+    async def test_restart_with_invalid_code_clears_repl_for_retry(self) -> None:
+        """When `restart=True` and type checking fails, the REPL is cleared so
+        the next retry still gets type-checked on a fresh REPL."""
+        wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        run_code = tools['run_code']
+
+        # First call succeeds — REPL has state.
+        await wrapper.call_tool('run_code', {'code': 'x = await add(a=1, b=2)'}, ctx, run_code)
+
+        # Restart with bad code — type checking catches it.
+        with pytest.raises(ModelRetry, match='Type error'):
+            await wrapper.call_tool('run_code', {'code': "await add(a='bad', b=3)", 'restart': True}, ctx, run_code)
+
+        # Retry without restart — should still be type-checked (REPL was cleared).
+        with pytest.raises(ModelRetry, match='Type error'):
+            await wrapper.call_tool('run_code', {'code': "await add(a='bad', b=3)"}, ctx, run_code)
 
     # ---------------------------------------------------------------------------
     # Internal helpers
