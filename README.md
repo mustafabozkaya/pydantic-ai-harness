@@ -35,6 +35,7 @@ Requires Python 3.10+ and `pydantic-ai-slim>=1.80.0`.
 
 ```python
 import logfire
+from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import MCP  # from the core pydantic-ai package
 from pydantic_harness import CodeMode
@@ -42,8 +43,16 @@ from pydantic_harness import CodeMode
 logfire.configure()
 logfire.instrument_pydantic_ai()
 
+
+class PRRanking(BaseModel):
+    pr_number: int
+    title: str
+    thumbs_up: int
+
+
 agent = Agent(
     'anthropic:claude-sonnet-4-6',
+    output_type=list[PRRanking],
     capabilities=[
         MCP('https://api.githubcopilot.com/mcp/'),
         CodeMode(),
@@ -51,6 +60,8 @@ agent = Agent(
 )
 
 result = agent.run_sync('Rank the open PRs on pydantic/pydantic-harness by thumbs-up reactions. Which 5 should we merge first?')
+for pr in result.output:
+    print(f'#{pr.pr_number} ({pr.thumbs_up} 👍) {pr.title}')
 ```
 
 [`MCP`](https://ai.pydantic.dev/capabilities/#provider-adaptive-tools) (from the core `pydantic-ai` package) connects your agent to any MCP server -- here, [GitHub's official MCP server](https://github.com/github/github-mcp-server).
