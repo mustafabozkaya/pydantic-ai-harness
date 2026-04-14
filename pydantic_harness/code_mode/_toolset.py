@@ -375,13 +375,13 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
         assert self._repl is not None
 
         capture = _PrintCapture()
-        approved_tool: str | None = None
+        approved_tool: tuple[str, Any] | None = None
 
         try:
             if ctx.tool_call_approved:
                 metadata = ctx.tool_call_metadata
                 snapshot = metadata.get('snapshot')
-                approved_tool = metadata.get('tool_name')
+                approved_tool = (metadata.get('tool_name'), metadata.get('kwargs'))
                 monty_state, self._repl = load_repl_snapshot(data=snapshot)
             else:
                 monty_state = self._repl.feed_start(code, print_callback=capture)
@@ -589,7 +589,7 @@ async def _execution_loop(
     sanitized_to_original: dict[str, str],
     sequential_tools: set[str],
     global_sequential: bool,
-    approved_tool: str | None,
+    approved_tool: tuple[str, Any] | None,
 ) -> MontyComplete:
     """Drive the Monty REPL via the synchronous snapshot API until completion.
 
@@ -657,7 +657,7 @@ async def _handle_function_snapshot(
     global_sequential: bool,
     pending: dict[int, asyncio.Task[Any] | Coroutine[Any, Any, Any]],
     pre_resolved: dict[int, ExternalResult],
-    approved_tool: str | None,
+    approved_tool: tuple[str, Any] | None,
 ) -> FunctionSnapshot | FutureSnapshot | NameLookupSnapshot | MontyComplete:
     """Handle a single FunctionSnapshot from the Monty execution loop."""
     fn_name = snapshot.function_name
@@ -673,11 +673,15 @@ async def _handle_function_snapshot(
     original_name = sanitized_to_original.get(fn_name, fn_name)
 
     td = callable_defs[fn_name]
-    if td.kind == 'unapproved' and td.name != approved_tool:
+    if td.kind == 'unapproved' and (
+        not approved_tool or (approved_tool and td.name != approved_tool[0] and snapshot.kwargs != approved_tool[1])
+    ):
         raise ApprovalRequired(
             metadata={'snapshot': snapshot.dump(), 'tool_name': original_name, 'kwargs': snapshot.kwargs}
         )
-    elif td.kind == 'external' and td.name != approved_tool:
+    elif td.kind == 'external' and (
+        not approved_tool or (approved_tool and td.name != approved_tool[0] and snapshot.kwargs != approved_tool[1])
+    ):
         raise CallDeferred(
             metadata={'snapshot': snapshot.dump(), 'tool_name': original_name, 'kwargs': snapshot.kwargs}
         )
