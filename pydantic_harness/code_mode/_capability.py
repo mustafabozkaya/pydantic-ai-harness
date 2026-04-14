@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import Any
 
-from pydantic_ai import AbstractToolset
+from pydantic_ai import AbstractToolset, DeferredToolRequests, RunContext
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
 from pydantic_ai.capabilities._tool_search import ToolSearch as _ToolSearch
+from pydantic_ai.run import AgentRunResult
 from pydantic_ai.tools import AgentDepsT, ToolSelector
 
 from pydantic_harness.code_mode._toolset import CodeModeToolset
+
+from ._toolset import _RUN_CODE_TOOL_NAME
 
 
 @dataclass
@@ -55,3 +59,19 @@ class CodeMode(AbstractCapability[AgentDepsT]):
     def get_wrapper_toolset(self, toolset: AbstractToolset[AgentDepsT]) -> AbstractToolset[AgentDepsT] | None:
         """Wrap the agent's assembled toolset, splitting it into native + sandboxed subsets if needed."""
         return CodeModeToolset(wrapped=toolset, tool_selector=self.tools, max_retries=self.max_retries)
+
+    async def after_run(self, ctx: RunContext[AgentDepsT], *, result: AgentRunResult[Any]) -> AgentRunResult[Any]:
+        output = result.output
+        if not isinstance(output, DeferredToolRequests):
+            return result
+
+        for i, part in enumerate(output.approvals):
+            if part.tool_name != _RUN_CODE_TOOL_NAME:
+                continue
+            metadata = result.output.metadata.get(part.tool_call_id, {})
+            tool_name = metadata.get('tool_name')
+            kwargs = metadata.get('kwargs')
+            if isinstance(tool_name, str) and isinstance(kwargs, dict):
+                output.approvals[i] = replace(part, tool_name=tool_name, args=kwargs)
+
+        return result

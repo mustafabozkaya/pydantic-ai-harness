@@ -38,6 +38,7 @@ try:
         MontySyntaxError,
         MontyTypingError,
         NameLookupSnapshot,
+        load_repl_snapshot,
     )
 except ImportError as _import_error:  # pragma: no cover
     raise ImportError(
@@ -374,9 +375,16 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
         assert self._repl is not None
 
         capture = _PrintCapture()
+        approved_tool: str | None = None
 
         try:
-            monty_state = self._repl.feed_start(code, print_callback=capture)
+            if ctx.tool_call_approved:
+                metadata = ctx.tool_call_metadata
+                snapshot = metadata.get('snapshot')
+                approved_tool = metadata.get('tool_name')
+                monty_state, self._repl = load_repl_snapshot(data=snapshot)
+            else:
+                monty_state = self._repl.feed_start(code, print_callback=capture)
             completed = await _execution_loop(
                 monty_state,
                 dispatch=dispatch_tool_call,
@@ -384,6 +392,7 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
                 sanitized_to_original=sanitized_to_original,
                 sequential_tools=sequential_tools,
                 global_sequential=global_sequential,
+                approved_tool=approved_tool,
             )
         except MontySyntaxError as e:
             raise ModelRetry(f'Syntax error in code:\n{_prepend_prints(e.display(), capture)}') from e
@@ -400,6 +409,10 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
             # (ModelRetry → MontyRuntimeError → ModelRetry), but the retry
             # semantics are the same — the model gets another chance.
             raise ModelRetry(f'Runtime error:\n{_prepend_prints(e.display(), capture)}') from e
+        except ValueError as e:
+            raise UserError('Snapshot is corrupted')
+        except (CallDeferred, ApprovalRequired) as e:
+            raise
 
         result = completed.output
         printed = capture.joined
@@ -453,18 +466,18 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
         native_fallbacks: set[str] = set()
         for name, tool in wrapped_tools.items():
             td = tool.tool_def
-            if td.defer:
-                if name not in self._warned_deferred:
-                    self._warned_deferred.add(name)
-                    warnings.warn(
-                        f'CodeMode: tool {name!r} requires deferred execution '
-                        f'(kind={td.kind!r}) and cannot be called from inside the '
-                        f'sandbox; it will be exposed as a native tool instead.',
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                native_fallbacks.add(name)
-                continue
+            # if td.defer:
+            #     if name not in self._warned_deferred:
+            #         self._warned_deferred.add(name)
+            #         warnings.warn(
+            #             f'CodeMode: tool {name!r} requires deferred execution '
+            #             f'(kind={td.kind!r}) and cannot be called from inside the '
+            #             f'sandbox; it will be exposed as a native tool instead.',
+            #             UserWarning,
+            #             stacklevel=2,
+            #         )
+            #     native_fallbacks.add(name)
+            #     continue
 
             safe_name = _sanitize_tool_name(name)
             if safe_name == _RUN_CODE_TOOL_NAME:
@@ -576,6 +589,7 @@ async def _execution_loop(
     sanitized_to_original: dict[str, str],
     sequential_tools: set[str],
     global_sequential: bool,
+    approved_tool: str | None,
 ) -> MontyComplete:
     """Drive the Monty REPL via the synchronous snapshot API until completion.
 
@@ -600,6 +614,7 @@ async def _execution_loop(
     # barrier) but whose FutureSnapshot hasn't been reached yet.
     pre_resolved: dict[int, ExternalResult] = {}
     try:
+        # I would ideally want to collect those here instead of raising them one by one and causing multiple flows of that
         while not isinstance(monty_state, MontyComplete):
             if isinstance(monty_state, NameLookupSnapshot):
                 monty_state = monty_state.resume()
@@ -613,6 +628,7 @@ async def _execution_loop(
                     global_sequential=global_sequential,
                     pending=pending,
                     pre_resolved=pre_resolved,
+                    approved_tool=approved_tool,
                 )
             else:
                 monty_state = await _resolve_future_snapshot(
@@ -641,6 +657,7 @@ async def _handle_function_snapshot(
     global_sequential: bool,
     pending: dict[int, asyncio.Task[Any] | Coroutine[Any, Any, Any]],
     pre_resolved: dict[int, ExternalResult],
+    approved_tool: str | None,
 ) -> FunctionSnapshot | FutureSnapshot | NameLookupSnapshot | MontyComplete:
     """Handle a single FunctionSnapshot from the Monty execution loop."""
     fn_name = snapshot.function_name
@@ -654,6 +671,16 @@ async def _handle_function_snapshot(
         )
 
     original_name = sanitized_to_original.get(fn_name, fn_name)
+
+    td = callable_defs[fn_name]
+    if td.kind == 'unapproved' and td.name != approved_tool:
+        raise ApprovalRequired(
+            metadata={'snapshot': snapshot.dump(), 'tool_name': original_name, 'kwargs': snapshot.kwargs}
+        )
+    elif td.kind == 'external' and td.name != approved_tool:
+        raise CallDeferred(
+            metadata={'snapshot': snapshot.dump(), 'tool_name': original_name, 'kwargs': snapshot.kwargs}
+        )
 
     if fn_name in sequential_tools:
         # Per-tool sequential: rendered as `def` (sync), so must resolve inline —
