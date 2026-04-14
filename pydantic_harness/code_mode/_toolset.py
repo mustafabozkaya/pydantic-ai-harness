@@ -382,6 +382,8 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
                 metadata = ctx.tool_call_metadata
                 snapshot = metadata.get('snapshot')
                 approved_tool = (metadata.get('tool_name'), metadata.get('kwargs'))
+                # TODO: Validate `ctx.tool_call_metadata` shape before using it.
+                # TODO: Confirm metadata key names stay consistent (`kwargs` vs `args`) end-to-end.
                 monty_state, self._repl = load_repl_snapshot(data=snapshot)
             else:
                 monty_state = self._repl.feed_start(code, print_callback=capture)
@@ -673,15 +675,16 @@ async def _handle_function_snapshot(
     original_name = sanitized_to_original.get(fn_name, fn_name)
 
     td = callable_defs[fn_name]
-    if td.kind == 'unapproved' and (
-        not approved_tool or (approved_tool and td.name != approved_tool[0] and snapshot.kwargs != approved_tool[1])
-    ):
+    # TODO: Revisit this condition. If approval should be per-call, match exact
+    # `(tool_name, kwargs)` and ensure the boolean logic doesn't accidentally
+    # allow or block calls due to operator precedence.
+
+    approved = approved_tool and (td.name == approved_tool[0] and snapshot.kwargs == approved_tool[1])
+    if td.kind == 'unapproved' and not approved:
         raise ApprovalRequired(
             metadata={'snapshot': snapshot.dump(), 'tool_name': original_name, 'kwargs': snapshot.kwargs}
         )
-    elif td.kind == 'external' and (
-        not approved_tool or (approved_tool and td.name != approved_tool[0] and snapshot.kwargs != approved_tool[1])
-    ):
+    elif td.kind == 'external' and not approved:
         raise CallDeferred(
             metadata={'snapshot': snapshot.dump(), 'tool_name': original_name, 'kwargs': snapshot.kwargs}
         )
@@ -704,6 +707,9 @@ async def _handle_function_snapshot(
     else:
         # Eagerly schedule as a Task for concurrent execution.
         pending[snapshot.call_id] = asyncio.ensure_future(dispatch(original_name, snapshot.kwargs))
+    # TODO: Nested call ids currently derive from a per-run counter in
+    # `dispatch_tool_call`. If you want stable Logfire traces across resumed
+    # runs, consider deriving IDs from Monty `snapshot.call_id` instead.
     return snapshot.resume(future=...)
 
 
