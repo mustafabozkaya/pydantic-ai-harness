@@ -47,7 +47,7 @@ except ImportError as _import_error:  # pragma: no cover
 from typing_extensions import NotRequired, TypedDict
 
 # Type alias for the dispatch callback passed to _execution_loop.
-_DispatchFn = Callable[[str, dict[str, Any]], Coroutine[Any, Any, Any]]
+_DispatchFn = Callable[[str, dict[str, Any], int], Coroutine[Any, Any, Any]]
 
 
 class _RunCodeArguments(TypedDict):
@@ -313,9 +313,8 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
         # can be attached as metadata on the run_code ToolReturnPart.
         nested_calls: dict[str, ToolCallPart] = {}
         nested_returns: dict[str, ToolReturnPart] = {}
-        call_counter = 0
 
-        async def dispatch_tool_call(original_name: str, kwargs: dict[str, Any]) -> Any:
+        async def dispatch_tool_call(original_name: str, kwargs: dict[str, Any], call_id: int) -> Any:
             """Dispatch a single tool call from inside the sandbox.
 
             Returns the serialized tool result on success. On failure, the
@@ -323,10 +322,8 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
             Monty via `ExternalException` so the sandbox sees it at the
             `await` site.
             """
-            nonlocal call_counter
-            call_counter += 1
             parent_id = ctx.tool_call_id or 'pyd_ai_code_mode'
-            tool_call_id = f'{parent_id}__{call_counter}'
+            tool_call_id = f'{parent_id}__{call_id}'
             call_part = ToolCallPart(tool_name=original_name, args=kwargs, tool_call_id=tool_call_id)
             nested_calls[tool_call_id] = call_part
 
@@ -468,19 +465,6 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
         native_fallbacks: set[str] = set()
         for name, tool in wrapped_tools.items():
             td = tool.tool_def
-            # if td.defer:
-            #     if name not in self._warned_deferred:
-            #         self._warned_deferred.add(name)
-            #         warnings.warn(
-            #             f'CodeMode: tool {name!r} requires deferred execution '
-            #             f'(kind={td.kind!r}) and cannot be called from inside the '
-            #             f'sandbox; it will be exposed as a native tool instead.',
-            #             UserWarning,
-            #             stacklevel=2,
-            #         )
-            #     native_fallbacks.add(name)
-            #     continue
-
             safe_name = _sanitize_tool_name(name)
             if safe_name == _RUN_CODE_TOOL_NAME:
                 raise UserError(
@@ -677,14 +661,15 @@ async def _handle_function_snapshot(
     td = callable_defs[fn_name]
 
     approved = approved_tool and (td.name == approved_tool[0] and snapshot.kwargs == approved_tool[1])
-    if td.kind == 'unapproved' and not approved:
-        raise ApprovalRequired(
-            metadata={'snapshot': snapshot.dump(), 'tool_name': original_name, 'kwargs': snapshot.kwargs}
-        )
-    elif td.kind == 'external' and not approved:
-        raise CallDeferred(
-            metadata={'snapshot': snapshot.dump(), 'tool_name': original_name, 'kwargs': snapshot.kwargs}
-        )
+    if not approved:
+        if td.kind == 'unapproved':
+            raise ApprovalRequired(
+                metadata={'snapshot': snapshot.dump(), 'tool_name': original_name, 'kwargs': snapshot.kwargs}
+            )
+        elif td.kind == 'external':
+            raise CallDeferred(
+                metadata={'snapshot': snapshot.dump(), 'tool_name': original_name, 'kwargs': snapshot.kwargs}
+            )
 
     if fn_name in sequential_tools:
         # Per-tool sequential: rendered as `def` (sync), so must resolve inline —
@@ -692,7 +677,7 @@ async def _handle_function_snapshot(
         # tasks first (barrier) to maintain ordering.
         for cid in list(pending):
             pre_resolved[cid] = await _resolve_coro(pending.pop(cid))
-        outcome = await _resolve_coro(dispatch(original_name, snapshot.kwargs))
+        outcome = await _resolve_coro(dispatch(original_name, snapshot.kwargs, snapshot.call_id))
         if 'return_value' in outcome:
             return snapshot.resume(return_value=outcome['return_value'])
         return snapshot.resume(exception=outcome['exception'])
@@ -700,10 +685,10 @@ async def _handle_function_snapshot(
     # Deferred execution — store for later resolution at FutureSnapshot.
     if global_sequential:
         # Bare coroutine — don't schedule on the event loop yet.
-        pending[snapshot.call_id] = dispatch(original_name, snapshot.kwargs)
+        pending[snapshot.call_id] = dispatch(original_name, snapshot.kwargs, snapshot.call_id)
     else:
         # Eagerly schedule as a Task for concurrent execution.
-        pending[snapshot.call_id] = asyncio.ensure_future(dispatch(original_name, snapshot.kwargs))
+        pending[snapshot.call_id] = asyncio.ensure_future(dispatch(original_name, snapshot.kwargs, snapshot.call_id))
     # TODO: Nested call ids currently derive from a per-run counter in
     # `dispatch_tool_call`. If you want stable Logfire traces across resumed
     # runs, consider deriving IDs from Monty `snapshot.call_id` instead.
