@@ -675,9 +675,6 @@ async def _handle_function_snapshot(
     original_name = sanitized_to_original.get(fn_name, fn_name)
 
     td = callable_defs[fn_name]
-    # TODO: Revisit this condition. If approval should be per-call, match exact
-    # `(tool_name, kwargs)` and ensure the boolean logic doesn't accidentally
-    # allow or block calls due to operator precedence.
 
     approved = approved_tool and (td.name == approved_tool[0] and snapshot.kwargs == approved_tool[1])
     if td.kind == 'unapproved' and not approved:
