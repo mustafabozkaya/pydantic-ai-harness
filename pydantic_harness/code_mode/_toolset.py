@@ -406,9 +406,9 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
             # (ModelRetry → MontyRuntimeError → ModelRetry), but the retry
             # semantics are the same — the model gets another chance.
             raise ModelRetry(f'Runtime error:\n{_prepend_prints(e.display(), capture)}') from e
-        except ValueError as e:
+        except ValueError:
             raise UserError('Snapshot is corrupted')
-        except (CallDeferred, ApprovalRequired) as e:
+        except (CallDeferred, ApprovalRequired):
             raise
 
         result = completed.output
