@@ -379,8 +379,6 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
                 metadata = ctx.tool_call_metadata
                 snapshot = metadata.get('snapshot')
                 approved_tool = (metadata.get('tool_name'), metadata.get('kwargs'))
-                # TODO: Validate `ctx.tool_call_metadata` shape before using it.
-                # TODO: Confirm metadata key names stay consistent (`kwargs` vs `args`) end-to-end.
                 monty_state, self._repl = load_repl_snapshot(data=snapshot)
             else:
                 monty_state = self._repl.feed_start(code, print_callback=capture)
@@ -660,7 +658,7 @@ async def _handle_function_snapshot(
 
     td = callable_defs[fn_name]
 
-    approved = approved_tool and (td.name == approved_tool[0] and snapshot.kwargs == approved_tool[1])
+    approved = approved_tool and (original_name == approved_tool[0] and snapshot.kwargs == approved_tool[1])
     if not approved:
         if td.kind == 'unapproved':
             raise ApprovalRequired(
@@ -689,9 +687,6 @@ async def _handle_function_snapshot(
     else:
         # Eagerly schedule as a Task for concurrent execution.
         pending[snapshot.call_id] = asyncio.ensure_future(dispatch(original_name, snapshot.kwargs, snapshot.call_id))
-    # TODO: Nested call ids currently derive from a per-run counter in
-    # `dispatch_tool_call`. If you want stable Logfire traces across resumed
-    # runs, consider deriving IDs from Monty `snapshot.call_id` instead.
     return snapshot.resume(future=...)
 
 
