@@ -8,7 +8,7 @@ import re
 import warnings
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field, replace
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
 from pydantic import Field, TypeAdapter
 from pydantic_ai import AbstractToolset, RunContext, ToolDefinition, WrapperToolset
@@ -16,7 +16,7 @@ from pydantic_ai.exceptions import ApprovalRequired, CallDeferred, ModelRetry, U
 from pydantic_ai.function_signature import FunctionSignature
 from pydantic_ai.messages import ToolCallPart, ToolReturn, ToolReturnContent, ToolReturnPart, is_multi_modal_content
 from pydantic_ai.tool_manager import ToolManager
-from pydantic_ai.tools import AgentDepsT, ToolSelector, matches_tool_selector
+from pydantic_ai.tools import AgentDepsT, ToolDenied, ToolSelector, matches_tool_selector
 from pydantic_ai.toolsets.abstract import SchemaValidatorProt, ToolsetTool
 
 try:
@@ -44,24 +44,6 @@ except ImportError as _import_error:  # pragma: no cover
         'pydantic-monty is required for CodeMode. Install it with: pip install "pydantic-ai-harness[code-mode]"'
     ) from _import_error
 from typing_extensions import NotRequired, TypedDict
-
-
-# TODO(pydantic-ai-slim release): replace with a direct
-# `from pydantic_ai.exceptions import ToolDeniedError` once the minimum version ships it.
-# This shim lets the module load against older slim releases; the placeholder never matches a
-# real exception, so the `except _ToolDeniedError` clause stays inert until the real class is
-# available.
-class _NoToolDeniedError(Exception):
-    @property
-    def tool_denied(self) -> Any:  # pragma: no cover
-        raise AttributeError
-
-
-_ToolDeniedError: type[BaseException] = getattr(
-    __import__('pydantic_ai.exceptions', fromlist=['ToolDeniedError']),
-    'ToolDeniedError',
-    _NoToolDeniedError,
-)
 
 # Type alias for the dispatch callback passed to _execution_loop.
 _DispatchFn = Callable[[str, dict[str, Any]], Coroutine[Any, Any, Any]]
@@ -343,22 +325,6 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
 
             try:
                 result = await tool_manager.handle_call(call_part, wrap_validation_errors=False)
-            except _ToolDeniedError as e:
-                # Handler denied the call. Record the denial in nested_returns with
-                # outcome='denied' so message history reflects the denial, and re-raise
-                # so the sandbox sees the denial as an exception rather than a string
-                # tool return that would look like success.
-                # pyright can't narrow `e.tool_denied.message` to str here because of the
-                # compat-shim union (`_ToolDeniedError | _NoToolDeniedError`); the attribute
-                # is guaranteed to be `ToolDenied` at runtime whenever this branch fires.
-                denied_message = cast(str, e.tool_denied.message)  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownArgumentType]
-                nested_returns[tool_call_id] = ToolReturnPart(
-                    tool_name=original_name,
-                    content=denied_message,
-                    tool_call_id=tool_call_id,
-                    outcome='denied',
-                )
-                raise
             except (CallDeferred, ApprovalRequired) as e:
                 # No handler resolved the deferral. The sandbox can't round-trip to the
                 # caller, so we convert it to a UserError that propagates through
@@ -369,6 +335,20 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
                     'capability on the agent so deferred and approval-required calls can '
                     'be resolved inline.'
                 ) from e
+
+            if isinstance(result, ToolDenied):
+                # Handler denied the call. Record the denial with outcome='denied' so
+                # message history reflects it, then raise inside the sandbox: surfacing
+                # `ToolDenied` to the user's script would let it masquerade as a string
+                # tool result, and the script has no way to introspect the marker class
+                # since `ToolDenied` isn't exposed inside Monty.
+                nested_returns[tool_call_id] = ToolReturnPart(
+                    tool_name=original_name,
+                    content=result.message,
+                    tool_call_id=tool_call_id,
+                    outcome='denied',
+                )
+                raise RuntimeError(f'Tool {original_name!r} call denied: {result.message}')
 
             # Unwrap ToolReturn to get the plain value for the sandbox,
             # preserving the full ToolReturn metadata on the return part.
