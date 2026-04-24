@@ -10,7 +10,7 @@ class GuardrailError(Exception):
 class InputBlocked(GuardrailError):
     """Raised by a user-supplied input guard to hard-fail a run.
 
-    Prefer returning ``False`` from the guard callable to trigger a graceful
+    Prefer returning `False` from the guard callable to trigger a graceful
     refusal via [`SkipModelRequest`][pydantic_ai.exceptions.SkipModelRequest].
     Raise this explicitly when the caller should have to handle the failure.
     """
