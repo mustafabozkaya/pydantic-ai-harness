@@ -8,7 +8,7 @@ import re
 import warnings
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field, replace
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from pydantic import Field, TypeAdapter
 from pydantic_ai import AbstractToolset, RunContext, ToolDefinition, WrapperToolset
@@ -44,6 +44,24 @@ except ImportError as _import_error:  # pragma: no cover
         'pydantic-monty is required for CodeMode. Install it with: pip install "pydantic-ai-harness[code-mode]"'
     ) from _import_error
 from typing_extensions import NotRequired, TypedDict
+
+
+# TODO(pydantic-ai-slim release): replace with a direct
+# `from pydantic_ai.exceptions import ToolDeniedError` once the minimum version ships it.
+# This shim lets the module load against older slim releases; the placeholder never matches a
+# real exception, so the `except _ToolDeniedError` clause stays inert until the real class is
+# available.
+class _NoToolDeniedError(Exception):
+    @property
+    def tool_denied(self) -> Any:  # pragma: no cover
+        raise AttributeError
+
+
+_ToolDeniedError: type[BaseException] = getattr(
+    __import__('pydantic_ai.exceptions', fromlist=['ToolDeniedError']),
+    'ToolDeniedError',
+    _NoToolDeniedError,
+)
 
 # Type alias for the dispatch callback passed to _execution_loop.
 _DispatchFn = Callable[[str, dict[str, Any]], Coroutine[Any, Any, Any]]
@@ -259,7 +277,7 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
         )
         return result
 
-    async def call_tool(
+    async def call_tool(  # noqa: C901
         self, name: str, tool_args: dict[str, Any], ctx: RunContext[AgentDepsT], tool: ToolsetTool[AgentDepsT]
     ) -> Any:
         """Execute Python code in the sandbox, or pass through to a native tool."""
@@ -325,12 +343,26 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
 
             try:
                 result = await tool_manager.handle_call(call_part, wrap_validation_errors=False)
+            except _ToolDeniedError as e:
+                # Handler denied the call. Record the denial in nested_returns with
+                # outcome='denied' so message history reflects the denial, and re-raise
+                # so the sandbox sees the denial as an exception rather than a string
+                # tool return that would look like success.
+                # pyright can't narrow `e.tool_denied.message` to str here because of the
+                # compat-shim union (`_ToolDeniedError | _NoToolDeniedError`); the attribute
+                # is guaranteed to be `ToolDenied` at runtime whenever this branch fires.
+                denied_message = cast(str, e.tool_denied.message)  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownArgumentType]
+                nested_returns[tool_call_id] = ToolReturnPart(
+                    tool_name=original_name,
+                    content=denied_message,
+                    tool_call_id=tool_call_id,
+                    outcome='denied',
+                )
+                raise
             except (CallDeferred, ApprovalRequired) as e:
-                # The sandbox can't round-trip to the caller, so unresolved
-                # deferrals can't be paused on. Raise UserError so the
-                # execution loop passes it into Monty as an ExternalException;
-                # Monty re-raises it as MontyRuntimeError, which we catch and
-                # convert to ModelRetry.
+                # No handler resolved the deferral. The sandbox can't round-trip to the
+                # caller, so we convert it to a UserError that propagates through
+                # Monty → MontyRuntimeError → ModelRetry.
                 raise UserError(
                     f'Tool {original_name!r} raised {type(e).__name__} inside code mode, '
                     'but no `HandleDeferredToolCalls` capability resolved it. Add a handler '
