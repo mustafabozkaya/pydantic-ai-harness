@@ -110,7 +110,7 @@ def test_extract_prompt_skips_messages_without_parts():
     messages: list[Any] = [_EmptyMessage(), ModelResponse(parts=[TextPart(content='only model parts here')])]
     assert _extract_prompt(_Ctx(), messages) is None  # pyright: ignore[reportArgumentType]
 
-async def _build_ctx_and_req() -> tuple[Any, Any]:
+async def _build_ctx_and_req(run_step: int = 1) -> tuple[Any, Any]:
     from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
     from pydantic_ai.models.test import TestModel as _TestModel
     from pydantic_ai.tools import RunContext
@@ -130,6 +130,7 @@ async def _build_ctx_and_req() -> tuple[Any, Any]:
         usage=RunUsage(),
         prompt='hello world',
         messages=messages,
+        run_step=run_step,
     )
     return run_ctx, req_ctx
 
@@ -345,3 +346,65 @@ async def test_parallel_mode_before_request_is_noop():
     out = await ig.before_model_request(run_ctx, req_ctx)
     assert out is req_ctx
     assert called == []
+
+
+# ---------------------------------------------------------------------------
+# Re-entry protection — the guard must only fire on the first model request
+# ---------------------------------------------------------------------------
+
+
+async def test_sequential_skips_guard_on_subsequent_steps():
+    """After the first model request, `before_model_request` must not re-run the guard."""
+    run_ctx, req_ctx = await _build_ctx_and_req(run_step=2)
+
+    called: list[str] = []
+
+    def guard(prompt: str) -> bool:  # pragma: no cover — should not be called after step 1
+        called.append(prompt)
+        return False
+
+    ig = InputGuard[None](guard=guard, parallel=False)
+    out = await ig.before_model_request(run_ctx, req_ctx)
+    assert out is req_ctx
+    assert called == []
+
+
+async def test_parallel_skips_guard_on_subsequent_steps():
+    """`wrap_model_request` must pass the handler through without running the guard past step 1."""
+    run_ctx, req_ctx = await _build_ctx_and_req(run_step=2)
+    sentinel = ModelResponse(parts=[TextPart(content='direct')])
+    called: list[str] = []
+
+    def guard(prompt: str) -> bool:  # pragma: no cover — should not be called after step 1
+        called.append(prompt)
+        return False
+
+    async def handler(_: Any) -> ModelResponse:
+        return sentinel
+
+    ig = InputGuard[None](guard=guard, parallel=True)
+    out = await ig.wrap_model_request(run_ctx, request_context=req_ctx, handler=handler)
+    assert out is sentinel
+    assert called == []
+
+
+async def test_guard_runs_once_across_tool_loop():
+    """End-to-end: guard fires once even when the model makes multiple tool calls."""
+    calls: list[str] = []
+
+    def guard(prompt: str) -> bool:
+        calls.append(prompt)
+        return True
+
+    # TestModel(call_tools='all') calls each tool once, then returns a text response — two
+    # model requests total.
+    model = TestModel(call_tools='all', custom_output_text='done')
+    agent = Agent(model, capabilities=[InputGuard[None](guard=guard)])
+
+    @agent.tool_plain
+    def ping() -> str:
+        return 'pong'
+
+    result = await agent.run('hello')
+    assert result.output == 'done'
+    assert calls == ['hello']

@@ -96,6 +96,12 @@ class InputGuard(AbstractCapability[AgentDepsT]):
     Set `parallel=True` to start the guard alongside the model call. The
     handler is cancelled as soon as the guard reports a violation, which saves
     tokens when the guard is slower than the provider round-trip.
+
+    Scope: the guard runs exactly once per run — on the first model request —
+    and evaluates the original user prompt. Subsequent model requests in the
+    same run (e.g. after tool calls) are not re-checked, since the user input
+    has not changed. Validation of tool results or other mid-run content
+    belongs in a separate capability hooking `after_model_request`.
     """
 
     guard: GuardrailFunc
@@ -121,7 +127,7 @@ class InputGuard(AbstractCapability[AgentDepsT]):
         request_context: ModelRequestContext,
     ) -> ModelRequestContext:
         """Check the prompt before the model call in sequential mode."""
-        if self.parallel:
+        if self.parallel or ctx.run_step > 1:
             return request_context
         prompt = _extract_prompt(ctx, list(request_context.messages))
         if prompt is None:
@@ -137,7 +143,7 @@ class InputGuard(AbstractCapability[AgentDepsT]):
         handler: WrapModelRequestHandler,
     ) -> ModelResponse:
         """Run the guard alongside the model call when `parallel=True`."""
-        if not self.parallel:
+        if not self.parallel or ctx.run_step > 1:
             return await handler(request_context)
         prompt = _extract_prompt(ctx, list(request_context.messages))
         if prompt is None:
