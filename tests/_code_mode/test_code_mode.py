@@ -1031,7 +1031,7 @@ class TestCodeMode:
         """
         try:
             from pydantic_ai.capabilities import HandleDeferredToolCalls
-        except ImportError:
+        except ImportError:  # pragma: no cover — only fires on floor-slim CI, which doesn't gate on coverage
             pytest.skip('Requires pydantic-ai-slim with `HandleDeferredToolCalls` (next release after 1.86.1)')
 
         from pydantic_ai.exceptions import ApprovalRequired as _ApprovalRequired
