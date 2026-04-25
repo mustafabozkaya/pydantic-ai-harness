@@ -61,7 +61,13 @@ def build_run_context(deps: T, run_step: int = 0) -> RunContext[T]:
     )
 
 
-async def build_ctx(deps: T, toolset: AbstractToolset[T], run_step: int = 0) -> RunContext[T]:
+async def build_ctx(
+    deps: T,
+    toolset: AbstractToolset[T],
+    run_step: int = 0,
+    *,
+    root_capability: Any = None,
+) -> RunContext[T]:
     """Build a `RunContext` with a prepared `ToolManager`.
 
     Use this for tests that call `call_tool` — `CodeModeToolset` requires
@@ -70,7 +76,7 @@ async def build_ctx(deps: T, toolset: AbstractToolset[T], run_step: int = 0) -> 
     from pydantic_ai.tool_manager import ToolManager
 
     ctx = build_run_context(deps, run_step=run_step)
-    tm = ToolManager(toolset=toolset)
+    tm = ToolManager(toolset=toolset, root_capability=root_capability)
     prepared_tm = await tm.for_run_step(ctx)
     ctx.tool_manager = prepared_tm
     return ctx
@@ -1013,6 +1019,35 @@ class TestCodeMode:
         tools = await wrapper.get_tools(ctx)
 
         with pytest.raises(ModelRetry, match='no `HandleDeferredToolCalls` capability resolved it'):
+            await wrapper.call_tool('run_code', {'code': 'await needs_approval()'}, ctx, tools['run_code'])
+
+    async def test_handler_denial_surfaces_as_model_retry(self) -> None:
+        """A `HandleDeferredToolCalls` handler denying a sandboxed tool call surfaces the denial.
+
+        The denial raises `RuntimeError` inside the sandbox so the script can't mistake
+        the denial message for a regular string return. If the script doesn't catch it,
+        Monty re-raises as `MontyRuntimeError`, which the harness converts to `ModelRetry`
+        with the original denial message preserved in the trace.
+        """
+        from pydantic_ai.capabilities import HandleDeferredToolCalls
+        from pydantic_ai.exceptions import ApprovalRequired as _ApprovalRequired
+        from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults, ToolDenied
+
+        def needs_approval() -> str:
+            """A tool that requires approval."""
+            raise _ApprovalRequired()
+
+        async def handler(ctx: RunContext[None], requests: DeferredToolRequests) -> DeferredToolResults:
+            return DeferredToolResults(
+                approvals={call.tool_call_id: ToolDenied(message='nope') for call in requests.approvals}
+            )
+
+        wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(needs_approval))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper, root_capability=HandleDeferredToolCalls(handler=handler))
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry, match=r'call denied: nope'):
             await wrapper.call_tool('run_code', {'code': 'await needs_approval()'}, ctx, tools['run_code'])
 
     async def test_model_retry_from_wrapped_tool_surfaces_as_model_retry(self) -> None:
