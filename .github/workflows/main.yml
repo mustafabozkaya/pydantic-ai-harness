@@ -71,6 +71,31 @@ jobs:
           path: coverage-data/.coverage.*
           include-hidden-files: true
 
+  # Verify the harness still works against the lowest pydantic-ai-slim version we
+  # claim compatibility with (the `>=` floor in pyproject.toml). The default `test`
+  # matrix above tracks pydantic-ai-slim's main branch via `[tool.uv.sources]`, so
+  # this is the only job that exercises the published-PyPI install path.
+  test-floor:
+    runs-on: ubuntu-latest
+    name: test on floor pydantic-ai-slim
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          python-version: '3.14'
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          cache-suffix: floor
+
+      # Install all transitive deps from the lock first, then override slim to the floor
+      # version. `--no-deps` keeps everything else lock-pinned; the floor only needs to
+      # pin slim itself.
+      - run: uv sync --frozen --group dev --all-extras
+      - run: uv pip install --no-deps "pydantic-ai-slim==1.80.0"
+      - run: uv run --no-sync pytest
+
   coverage:
     needs: [test]
     runs-on: ubuntu-latest
@@ -96,7 +121,7 @@ jobs:
 
   check:
     if: always()
-    needs: [lint, test, coverage]
+    needs: [lint, test, test-floor, coverage]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2

@@ -1029,7 +1029,11 @@ class TestCodeMode:
         Monty re-raises as `MontyRuntimeError`, which the harness converts to `ModelRetry`
         with the original denial message preserved in the trace.
         """
-        from pydantic_ai.capabilities import HandleDeferredToolCalls
+        try:
+            from pydantic_ai.capabilities import HandleDeferredToolCalls
+        except ImportError:
+            pytest.skip('Requires pydantic-ai-slim with `HandleDeferredToolCalls` (next release after 1.86.1)')
+
         from pydantic_ai.exceptions import ApprovalRequired as _ApprovalRequired
         from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults, ToolDenied
 
