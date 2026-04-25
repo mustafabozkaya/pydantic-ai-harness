@@ -334,6 +334,33 @@ class TestInputGuardParallel:
         assert out is sentinel
         assert called == []
 
+    async def test_no_dangling_tasks_when_handler_raises(self):
+        """`finally` must drain cancelled tasks so they don't outlive the call.
+
+        `task.cancel()` only schedules a `CancelledError` for the next loop tick — without
+        awaiting, the task stays in `asyncio.all_tasks()` after `wrap_model_request`
+        returns, leaks into the surrounding scope, and produces "Task exception was never
+        retrieved" warnings if it later raises.
+        """
+        run_ctx, req_ctx = _build_ctx_and_req()
+
+        async def failing_handler(_: Any) -> ModelResponse:
+            raise RuntimeError('handler boom')
+
+        async def slow_guard(_: str) -> bool:
+            await asyncio.sleep(10)
+            return True  # pragma: no cover
+
+        current = asyncio.current_task()
+        before = {t for t in asyncio.all_tasks() if t is not current}
+
+        ig = InputGuard[None](guard=slow_guard, parallel=True)
+        with pytest.raises(RuntimeError, match='handler boom'):
+            await ig.wrap_model_request(run_ctx, request_context=req_ctx, handler=failing_handler)
+
+        leftover = {t for t in asyncio.all_tasks() if t is not current} - before
+        assert leftover == set(), f'guard/handler tasks must be drained, got dangling: {leftover}'
+
 
 class TestExtractPrompt:
     """Unit tests for the `_extract_prompt` helper."""

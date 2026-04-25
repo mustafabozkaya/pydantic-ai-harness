@@ -17,6 +17,7 @@ Both guards accept sync or async callables.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -186,6 +187,10 @@ class InputGuard(AbstractCapability[AgentDepsT]):
                 guard_task.cancel()
             if not handler_task.done():
                 handler_task.cancel()
+
+            for task in (guard_task, handler_task):
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
 
 
 @dataclass
