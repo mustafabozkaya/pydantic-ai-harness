@@ -17,7 +17,6 @@ Both guards accept sync or async callables.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import inspect
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -165,30 +164,22 @@ class InputGuard(AbstractCapability[AgentDepsT]):
         handler_task: asyncio.Task[ModelResponse] = asyncio.create_task(run_handler())
         try:
             done, _ = await asyncio.wait(
-                [guard_task, handler_task],
+                {guard_task, handler_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if guard_task in done:
-                if guard_task.exception() is not None:
-                    handler_task.cancel()
-                    await guard_task  # re-raises the guard's exception
+                await guard_task
                 return await handler_task
-            # Handler finished first: if it raised, cancel the guard and propagate.
-            if handler_task.exception() is not None:
-                guard_task.cancel()
-                await handler_task  # re-raises the handler's exception
-            # Handler succeeded; still need the guard verdict before committing the response.
-            await guard_task
-            return handler_task.result()
-        finally:
-            if not guard_task.done():
-                guard_task.cancel()
-            if not handler_task.done():
-                handler_task.cancel()
 
+            response = await handler_task
+            await guard_task
+            return response
+        finally:
             for task in (guard_task, handler_task):
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
+                if not task.done():
+                    task.cancel()
+
+            await asyncio.gather(guard_task, handler_task, return_exceptions=True)
 
 
 @dataclass
