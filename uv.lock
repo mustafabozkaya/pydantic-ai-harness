@@ -897,9 +897,9 @@ lint = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pydantic-ai-slim", git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=main" },
-    { name = "pydantic-ai-slim", extras = ["dbos"], marker = "extra == 'dbos'", git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=main" },
-    { name = "pydantic-ai-slim", extras = ["temporal"], marker = "extra == 'temporal'", git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=main" },
+    { name = "pydantic-ai-slim", git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=background-tools" },
+    { name = "pydantic-ai-slim", extras = ["dbos"], marker = "extra == 'dbos'", git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=background-tools" },
+    { name = "pydantic-ai-slim", extras = ["temporal"], marker = "extra == 'temporal'", git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=background-tools" },
     { name = "pydantic-monty", marker = "extra == 'code-mode'", specifier = ">=0.0.16" },
 ]
 provides-extras = ["code-mode", "dbos", "temporal"]
@@ -920,8 +920,8 @@ lint = [
 
 [[package]]
 name = "pydantic-ai-slim"
-version = "1.80.0"
-source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=main#4dcfb01e74867485fdb41f8eb3dc535e6e057a90" }
+version = "1.86.2.dev12+cb91f8cf"
+source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=background-tools#cb91f8cfba7046218fbef08aca1fd627dce69ff9" }
 dependencies = [
     { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
     { name = "genai-prices" },
@@ -1061,8 +1061,8 @@ wheels = [
 
 [[package]]
 name = "pydantic-graph"
-version = "1.80.0"
-source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_graph&branch=main#4dcfb01e74867485fdb41f8eb3dc535e6e057a90" }
+version = "1.86.2.dev12+cb91f8cf"
+source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_graph&branch=background-tools#cb91f8cfba7046218fbef08aca1fd627dce69ff9" }
 dependencies = [
     { name = "httpx" },
     { name = "logfire-api" },
