@@ -93,7 +93,7 @@ jobs:
       # version. `--no-deps` keeps everything else lock-pinned; the floor only needs to
       # pin slim itself.
       - run: uv sync --frozen --group dev --all-extras
-      - run: uv pip install --no-deps "pydantic-ai-slim==1.80.0"
+      - run: uv pip install --no-deps "pydantic-ai-slim==1.89.1"
       - run: uv run --no-sync pytest
 
   coverage:
