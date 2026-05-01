@@ -52,22 +52,12 @@ jobs:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job has no write permissions and no secrets
           cache-suffix: compat
 
-      - name: Override pydantic-ai-slim source to local checkout
-        # The harness's [tool.uv.sources] points pydantic-ai-slim at pydantic-ai's main
-        # branch via git. Replace that with a local-path source so we test against the
-        # specific PR ref we just checked out, then re-lock so uv.lock matches.
-        run: |
-          set -euo pipefail
-          BEFORE=$(grep -c '^pydantic-ai-slim = { git = ' pyproject.toml)
-          if [ "$BEFORE" -ne 1 ]; then
-            echo "::error::Expected exactly one pydantic-ai-slim git source in pyproject.toml, found $BEFORE"
-            exit 1
-          fi
-          sed -i 's|^pydantic-ai-slim = { git = .*}$|pydantic-ai-slim = { path = "./pydantic-ai/pydantic_ai_slim", editable = true }|' pyproject.toml
-          uv lock --upgrade-package pydantic-ai-slim
-
-      - name: Install (lint + dev + all extras)
-        run: uv sync --all-extras --group lint --group dev
+      # Install lock-resolved deps first, then override pydantic-ai-slim with the
+      # local checkout via `--no-deps` (everything else stays lock-pinned). This is
+      # the same pattern test-floor uses, just pointing at a local path instead of
+      # a PyPI version.
+      - run: uv sync --frozen --all-extras --group lint --group dev
+      - run: uv pip install --no-deps -e ./pydantic-ai/pydantic_ai_slim
 
       - run: uv run ruff format --check
       - run: uv run ruff check

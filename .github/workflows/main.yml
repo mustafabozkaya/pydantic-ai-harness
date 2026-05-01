@@ -73,8 +73,10 @@ jobs:
 
   # Verify the harness still works against the lowest pydantic-ai-slim version we
   # claim compatibility with (the `>=` floor in pyproject.toml). The default `test`
-  # matrix above tracks pydantic-ai-slim's main branch via `[tool.uv.sources]`, so
-  # this is the only job that exercises the published-PyPI install path.
+  # matrix above resolves against the lock (= latest published satisfying our
+  # constraints); this job exercises the actual floor. Bleeding-edge compat with
+  # pydantic-ai's main branch is verified by pydantic-ai's `harness compat` job
+  # (see https://github.com/pydantic/pydantic-ai/blob/main/.github/workflows/harness-compat.yml).
   test-floor:
     runs-on: ubuntu-latest
     name: test on floor pydantic-ai-slim
@@ -90,10 +92,26 @@ jobs:
           cache-suffix: floor
 
       # Install all transitive deps from the lock first, then override slim to the floor
-      # version. `--no-deps` keeps everything else lock-pinned; the floor only needs to
-      # pin slim itself.
+      # version read from pyproject.toml. `--no-deps` keeps everything else lock-pinned;
+      # the floor only needs to pin slim itself. Reading from pyproject.toml keeps the
+      # floor as a single source of truth — bumping it there auto-updates this job.
       - run: uv sync --frozen --group dev --all-extras
-      - run: uv pip install --no-deps "pydantic-ai-slim==1.89.1"
+      - name: Install pydantic-ai-slim at documented floor
+        run: |
+          set -euo pipefail
+          FLOOR=$(python3 -c "
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              data = tomllib.load(f)
+          for dep in data['project']['dependencies']:
+              if dep.startswith('pydantic-ai-slim>='):
+                  print(dep.split('>=', 1)[1])
+                  break
+          else:
+              raise SystemExit('Could not find pydantic-ai-slim>= constraint in pyproject.toml')
+          ")
+          echo "Testing against pydantic-ai-slim floor: $FLOOR"
+          uv pip install --no-deps "pydantic-ai-slim==$FLOOR"
       - run: uv run --no-sync pytest
 
   coverage:
