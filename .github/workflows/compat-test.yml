@@ -1,0 +1,75 @@
+name: Compat Test
+
+# Reusable workflow: install harness against an arbitrary pydantic-ai ref and run
+# the harness's lint, typecheck, and test suite. Called from pydantic-ai's CI to
+# verify that pydantic-ai PRs don't break the harness's contract before merge.
+#
+# Security: the called pydantic-ai ref may come from an untrusted fork PR, so
+# this workflow runs without secrets and never grants write permissions. The
+# caller (pydantic-ai's harness-compat workflow) gates fork PRs behind an
+# approval label before invoking this workflow.
+
+on:
+  workflow_call:
+    inputs:
+      pydantic-ai-ref:
+        description: 'SHA, branch, or tag of pydantic-ai to test the harness against.'
+        type: string
+        required: true
+      pydantic-ai-repo:
+        description: 'Repository hosting the pydantic-ai ref. Pass the fork''s full_name when testing fork PRs.'
+        type: string
+        required: false
+        default: pydantic/pydantic-ai
+
+permissions:
+  contents: read
+
+jobs:
+  compat:
+    name: harness vs pydantic-ai @ ${{ inputs.pydantic-ai-ref }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout harness (main)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: pydantic/pydantic-ai-harness
+          ref: main
+          persist-credentials: false
+
+      - name: Checkout pydantic-ai @ ${{ inputs.pydantic-ai-ref }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ inputs.pydantic-ai-repo }}
+          ref: ${{ inputs.pydantic-ai-ref }}
+          path: pydantic-ai
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          python-version: '3.14'
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job has no write permissions and no secrets
+          cache-suffix: compat
+
+      - name: Override pydantic-ai-slim source to local checkout
+        # The harness's [tool.uv.sources] points pydantic-ai-slim at pydantic-ai's main
+        # branch via git. Replace that with a local-path source so we test against the
+        # specific PR ref we just checked out, then re-lock so uv.lock matches.
+        run: |
+          set -euo pipefail
+          BEFORE=$(grep -c '^pydantic-ai-slim = { git = ' pyproject.toml)
+          if [ "$BEFORE" -ne 1 ]; then
+            echo "::error::Expected exactly one pydantic-ai-slim git source in pyproject.toml, found $BEFORE"
+            exit 1
+          fi
+          sed -i 's|^pydantic-ai-slim = { git = .*}$|pydantic-ai-slim = { path = "./pydantic-ai/pydantic_ai_slim", editable = true }|' pyproject.toml
+          uv lock --upgrade-package pydantic-ai-slim
+
+      - name: Install (lint + dev + all extras)
+        run: uv sync --all-extras --group lint --group dev
+
+      - run: uv run ruff format --check
+      - run: uv run ruff check
+      - run: uv run pyright
+      - run: uv run pytest
