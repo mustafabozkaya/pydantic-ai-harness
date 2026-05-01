@@ -920,8 +920,8 @@ lint = [
 
 [[package]]
 name = "pydantic-ai-slim"
-version = "1.86.2.dev5+2b0aa93a"
-source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=main#2b0aa93a9aea08ddfcdae03605fdb0d5a2486eec" }
+version = "1.89.1.dev6+f7ff835c"
+source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_ai_slim&branch=main#f7ff835cb0f4d342a15a7030839ea343e0d6eaba" }
 dependencies = [
     { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
     { name = "genai-prices" },
@@ -1059,8 +1059,8 @@ wheels = [
 
 [[package]]
 name = "pydantic-graph"
-version = "1.86.2.dev5+2b0aa93a"
-source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_graph&branch=main#2b0aa93a9aea08ddfcdae03605fdb0d5a2486eec" }
+version = "1.89.1.dev6+f7ff835c"
+source = { git = "https://github.com/pydantic/pydantic-ai.git?subdirectory=pydantic_graph&branch=main#f7ff835cb0f4d342a15a7030839ea343e0d6eaba" }
 dependencies = [
     { name = "httpx" },
     { name = "logfire-api" },
