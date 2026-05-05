@@ -15,7 +15,7 @@ Pydantic AI's [capabilities](https://ai.pydantic.dev/capabilities/) and [hooks](
 
 The [capability matrix](#capability-matrix) tracks where we are. [Tell us what to prioritize.](#help-us-prioritize)
 
-**Contents:** [Installation](#installation) · [Quick start](#quick-start) · [Capability matrix](#capability-matrix) · [Help us prioritize](#help-us-prioritize) · [Build your own](#build-your-own) · [Contributing](#contributing) · [Version policy](#version-policy) · [Pydantic AI references](#pydantic-ai-references) · [License](#license)
+**Contents:** [Installation](#installation) · [Quick start](#quick-start) · [Full ecosystem agent](#full-ecosystem-agent) · [Capability matrix](#capability-matrix) · [Help us prioritize](#help-us-prioritize) · [Build your own](#build-your-own) · [Contributing](#contributing) · [Version policy](#version-policy) · [Pydantic AI references](#pydantic-ai-references) · [License](#license)
 
 ## Installation
 
@@ -33,10 +33,14 @@ Requires Python 3.10+ and `pydantic-ai-slim>=1.80.0`.
 
 ## Quick start
 
+```bash
+uv add "pydantic-ai-slim[anthropic,mcp,logfire]" "pydantic-ai-harness[code-mode]"
+```
+
 ```python
 import logfire
 from pydantic_ai import Agent
-from pydantic_ai.capabilities import MCP  # from the core pydantic-ai package
+from pydantic_ai.capabilities import MCP, WebSearch  # from the core pydantic-ai package
 from pydantic_ai_harness import CodeMode
 
 logfire.configure()
@@ -45,20 +49,87 @@ logfire.instrument_pydantic_ai()
 agent = Agent(
     'anthropic:claude-sonnet-4-6',
     capabilities=[
-        MCP('https://api.githubcopilot.com/mcp/'),
+        MCP('https://hn.caseyjhand.com/mcp', builtin=False),
+        WebSearch(),
         CodeMode(),
     ],
 )
 
-result = agent.run_sync('Rank the open PRs on pydantic/pydantic-ai-harness by thumbs-up reactions. Which 5 should we merge first?')
+result = agent.run_sync(
+    "Fetch the top, best, and 'show HN' Hacker News feeds in parallel. "
+    "Filter to stories with >100 points and >50 comments posted in the last 6 hours. "
+    "For the most-discussed one, search the web for follow-up coverage and "
+    "return a one-paragraph synthesis."
+)
 print(result.output)
 ```
 
-[`MCP`](https://ai.pydantic.dev/capabilities/#provider-adaptive-tools) (from the core `pydantic-ai` package) connects your agent to any MCP server -- here, [GitHub's official MCP server](https://github.com/github/github-mcp-server).
+[`MCP`](https://ai.pydantic.dev/capabilities/#provider-adaptive-tools) (from the core `pydantic-ai` package) connects your agent to any MCP server -- here, the open-source [Hacker News MCP server](https://github.com/cyanheads/hn-mcp-server). Passing `builtin=False` forces the local toolset so `CodeMode` can wrap the tools; without it, providers that natively support MCP servers (e.g. Anthropic) execute tools server-side and bypass the sandbox.
 
-[`CodeMode`](pydantic_ai_harness/code_mode/) wraps all tools into a single `run_code` tool powered by our [Monty](https://github.com/pydantic/monty) sandbox, so the model can orchestrate multiple tool calls with Python code instead of one model round-trip per call.
+[`WebSearch`](https://ai.pydantic.dev/capabilities/#provider-adaptive-tools) (also from core) is provider-adaptive -- it uses the model's builtin web search when available and falls back to a local DuckDuckGo implementation otherwise.
+
+[`CodeMode`](pydantic_ai_harness/code_mode/) wraps all tools into a single `run_code` tool powered by our [Monty](https://github.com/pydantic/monty) sandbox, so the model can orchestrate multiple tool calls with Python code instead of one model round-trip per call. The prompt above naturally calls for three parallel feed fetches, an in-memory filter over potentially hundreds of stories, and a follow-up web search -- all in a single `run_code` invocation.
 
 [`logfire`](https://pydantic.dev/logfire) gives you a trace for every agent run. With CodeMode, you can see the `run_code` span with each nested tool call as a child span -- making it easy to debug what the model's code actually did. See the [Pydantic AI Logfire docs](https://ai.pydantic.dev/logfire/) for setup details.
+
+## Full ecosystem agent
+
+The example above is intentionally minimal. The example below is *illustrative*: it pulls together capabilities from across the Pydantic AI ecosystem -- this repo, the core `pydantic-ai` package, and the community packages we [endorse below](#capability-matrix) -- to show what an agent at the upper bound of what's possible today can look like. Some of these capabilities have setup requirements (e.g. a `./skills` directory, a Postgres database for persistent todos), and the community packages are versioned independently, so this snippet isn't necessarily one you'd copy-paste verbatim. The [capability matrix](#capability-matrix) tracks the status of each one.
+
+```python
+import logfire
+from pydantic_ai import Agent
+from pydantic_ai.capabilities import MCP, Thinking, WebSearch
+from pydantic_ai_harness import CodeMode
+from pydantic_ai_backends import ConsoleCapability
+from pydantic_ai_summarization import ContextManagerCapability
+from pydantic_deep import MemoryCapability, StuckLoopDetection
+from pydantic_ai_skills import SkillsCapability
+from subagents_pydantic_ai import SubAgentCapability, SubAgentConfig
+from pydantic_ai_todo import TodoCapability
+from pydantic_ai_shields import CostTracking, InputGuard, SecretRedaction, ToolGuard
+
+logfire.configure()
+logfire.instrument_pydantic_ai()
+
+agent = Agent(
+    'anthropic:claude-sonnet-4-6',
+    capabilities=[
+        # --- Reasoning ---
+        Thinking(effort='medium'),
+
+        # --- Tools & execution ---
+        CodeMode(),
+        MCP('https://hn.caseyjhand.com/mcp', builtin=False),
+        ConsoleCapability(),                              # filesystem + shell -- by @vstorm-co (https://github.com/vstorm-co/pydantic-ai-backend)
+        WebSearch(),
+
+        # --- Context management ---
+        ContextManagerCapability(max_tokens=180_000),     # sliding window + LLM compaction -- by @vstorm-co (https://github.com/vstorm-co/summarization-pydantic-ai)
+
+        # --- Memory & persistence ---
+        MemoryCapability(agent_name='demo'),              # writes ./MEMORY.md -- by @vstorm-co (https://github.com/vstorm-co/pydantic-deepagents)
+
+        # --- Orchestration ---
+        SkillsCapability(directories=['./skills']),       # Anthropic Agent Skills spec -- by @DougTrajano (https://github.com/DougTrajano/pydantic-ai-skills)
+        SubAgentCapability(subagents=[                    # by @vstorm-co (https://github.com/vstorm-co/subagents-pydantic-ai)
+            SubAgentConfig(
+                name='researcher',
+                description='Deep research on a topic',
+                instructions='You are a thorough research assistant.',
+            ),
+        ]),
+        TodoCapability(enable_subtasks=True),             # in-memory; AsyncPostgresStorage available for persistence -- by @vstorm-co (https://github.com/vstorm-co/pydantic-ai-todo)
+
+        # --- Safety & reliability ---
+        CostTracking(budget_usd=5.0),                     # the next four are by @vstorm-co (https://github.com/vstorm-co/pydantic-ai-shields)
+        InputGuard(guard=lambda p: 'ignore previous instructions' not in p.lower()),
+        ToolGuard(blocked=['rm'], require_approval=['write_file']),
+        SecretRedaction(),
+        StuckLoopDetection(),                             # by @vstorm-co (https://github.com/vstorm-co/pydantic-deepagents)
+    ],
+)
+```
 
 ## Capability matrix
 
