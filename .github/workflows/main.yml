@@ -71,15 +71,18 @@ jobs:
           path: coverage-data/.coverage.*
           include-hidden-files: true
 
-  # Verify the harness still works against the lowest pydantic-ai-slim version we
-  # claim compatibility with (the `>=` floor in pyproject.toml). The default `test`
-  # matrix above resolves against the lock (= latest published satisfying our
-  # constraints); this job exercises the actual floor. Bleeding-edge compat with
-  # pydantic-ai's main branch is verified by pydantic-ai's `harness compat` job
-  # (see https://github.com/pydantic/pydantic-ai/blob/main/.github/workflows/harness-compat.yml).
+  # Verify the harness still works against the lowest direct-dep versions we claim
+  # compatibility with (the `>=` floors in pyproject.toml — including pydantic-ai-slim
+  # but also any other direct dep). The default `test` matrix above resolves against
+  # the lock (= latest published satisfying our constraints); this job exercises the
+  # entire claimed compatibility envelope. Mirrors pydantic-ai's `test-lowest-versions`
+  # job so the convention is consistent across the workspace.
+  #
+  # Bleeding-edge compat with pydantic-ai's main branch is verified by pydantic-ai's
+  # `harness compat` job (see https://github.com/pydantic/pydantic-ai/blob/main/.github/workflows/harness-compat.yml).
   test-floor:
     runs-on: ubuntu-latest
-    name: test on floor pydantic-ai-slim
+    name: test on lowest direct-dep versions
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -91,27 +94,7 @@ jobs:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-suffix: floor
 
-      # Install all transitive deps from the lock first, then override slim to the floor
-      # version read from pyproject.toml. `--no-deps` keeps everything else lock-pinned;
-      # the floor only needs to pin slim itself. Reading from pyproject.toml keeps the
-      # floor as a single source of truth — bumping it there auto-updates this job.
-      - run: uv sync --frozen --group dev --all-extras
-      - name: Install pydantic-ai-slim at documented floor
-        run: |
-          set -euo pipefail
-          FLOOR=$(python3 -c "
-          import tomllib
-          with open('pyproject.toml', 'rb') as f:
-              data = tomllib.load(f)
-          for dep in data['project']['dependencies']:
-              if dep.startswith('pydantic-ai-slim>='):
-                  print(dep.split('>=', 1)[1])
-                  break
-          else:
-              raise SystemExit('Could not find pydantic-ai-slim>= constraint in pyproject.toml')
-          ")
-          echo "Testing against pydantic-ai-slim floor: $FLOOR"
-          uv pip install --no-deps "pydantic-ai-slim==$FLOOR"
+      - run: uv sync --resolution lowest-direct --group dev --all-extras
       - run: uv run --no-sync pytest
 
   coverage:

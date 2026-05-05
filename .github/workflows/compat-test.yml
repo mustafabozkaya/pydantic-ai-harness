@@ -52,12 +52,16 @@ jobs:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job has no write permissions and no secrets
           cache-suffix: compat
 
-      # Install lock-resolved deps first, then override pydantic-ai-slim with the
-      # local checkout via `--no-deps` (everything else stays lock-pinned). This is
-      # the same pattern test-floor uses, just pointing at a local path instead of
-      # a PyPI version.
+      # Install lock-resolved deps first, then override `pydantic-ai-slim` AND
+      # `pydantic-graph` with the local checkouts via `--no-deps`. Both are sibling
+      # packages in the pydantic-ai repo and version-track together; testing slim
+      # from-source against a stale graph from PyPI would mask cross-package issues
+      # (e.g. a slim PR depending on an unreleased graph change).
       - run: uv sync --frozen --all-extras --group lint --group dev
-      - run: uv pip install --no-deps -e ./pydantic-ai/pydantic_ai_slim
+      - run: |
+          uv pip install --no-deps \
+            -e ./pydantic-ai/pydantic_ai_slim \
+            -e ./pydantic-ai/pydantic_graph
 
       - run: uv run ruff format --check
       - run: uv run ruff check
