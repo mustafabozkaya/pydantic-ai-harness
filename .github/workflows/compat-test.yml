@@ -65,5 +65,10 @@ jobs:
 
       - run: uv run ruff format --check
       - run: uv run ruff check
-      - run: uv run pyright
+      # Scope pyright to harness sources. The pydantic-ai checkout sits at
+      # `./pydantic-ai/` inside the working tree, and pyright's `exclude` in
+      # pyproject.toml doesn't list it (no need to in normal CI — the dir doesn't
+      # exist there). Without scoping, pyright walks into pydantic-ai's own tests
+      # and surfaces thousands of unrelated findings.
+      - run: uv run pyright pydantic_ai_harness tests
       - run: uv run pytest
