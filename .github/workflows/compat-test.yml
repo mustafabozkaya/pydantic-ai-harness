@@ -5,9 +5,16 @@ name: Compat Test
 # verify that pydantic-ai PRs don't break the harness's contract before merge.
 #
 # Security: the called pydantic-ai ref may come from an untrusted fork PR, so
-# this workflow runs without secrets and never grants write permissions. The
-# caller (pydantic-ai's harness-compat workflow) gates fork PRs behind an
-# approval label before invoking this workflow.
+# this workflow runs without secrets and only with `contents: read`. That keeps
+# fork PR exposure equivalent to pydantic-ai's regular `ci.yml` test jobs.
+#
+# **If you add steps that need elevated permissions or secrets** (Anthropic API
+# key, write tokens, deploy creds, anything posting to external services), the
+# caller (pydantic-ai's `harness-compat.yml`) needs to gate fork PRs at the
+# job level so untrusted code can't be triggered with the new privileges. The
+# original `safe-for-ci` label gate was removed once the workflow's scope was
+# stable at `contents: read` — adding it back is the standard pattern if scope
+# grows.
 
 on:
   workflow_call:
