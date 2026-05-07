@@ -748,6 +748,16 @@ class TestMemoryCapability:
         tool_names = set(toolset.tools.keys())
         assert tool_names == {'save_memory', 'recall_memory', 'search_memories', 'list_memories', 'delete_memory'}
 
+    def test_tool_descriptions_override(self) -> None:
+        custom = 'CUSTOM: Save aggressively. Tiny facts count.'
+        cap: Memory[None] = Memory(tool_descriptions={'save_memory': custom})
+        toolset = cap.get_toolset()
+        assert isinstance(toolset, FunctionToolset)
+        assert toolset.tools['save_memory'].description == custom
+        # Other tools fall back to docstring (not the override)
+        recall_desc = toolset.tools['recall_memory'].description
+        assert recall_desc is not None and 'Recall' in recall_desc
+
 
 # --- Tool functions (via closure) ---
 

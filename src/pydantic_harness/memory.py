@@ -535,6 +535,11 @@ class Memory(AbstractCapability[AgentDepsT]):
     Pass any `Callable[[MemoryEntry], float]` for custom decay shapes.
     """
 
+    tool_descriptions: dict[str, str] = field(default_factory=lambda: dict[str, str]())
+    """Per-tool description overrides. Keys are tool names (`save_memory`, `recall_memory`,
+    `search_memories`, `list_memories`, `delete_memory`); values replace the docstring used
+    by the LLM. Useful for nudging the agent (e.g., "Save aggressively, even small facts")."""
+
     @classmethod
     def get_serialization_name(cls) -> str | None:
         """Return the name used for spec serialization."""
@@ -738,12 +743,13 @@ class Memory(AbstractCapability[AgentDepsT]):
                 return f'Memory deleted: {key}'
             return f'No memory found for key: {key}'
 
+        descs = self.tool_descriptions
         return FunctionToolset(
             [
-                Tool(save_memory, takes_ctx=False),
-                Tool(recall_memory, takes_ctx=False),
-                Tool(search_memories, takes_ctx=False),
-                Tool(list_memories, takes_ctx=False),
-                Tool(delete_memory, takes_ctx=False),
+                Tool(save_memory, takes_ctx=False, description=descs.get('save_memory')),
+                Tool(recall_memory, takes_ctx=False, description=descs.get('recall_memory')),
+                Tool(search_memories, takes_ctx=False, description=descs.get('search_memories')),
+                Tool(list_memories, takes_ctx=False, description=descs.get('list_memories')),
+                Tool(delete_memory, takes_ctx=False, description=descs.get('delete_memory')),
             ],
         )
