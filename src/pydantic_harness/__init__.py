@@ -7,11 +7,11 @@ Usage:
 # Each capability module is imported and re-exported here.
 # Capabilities are listed alphabetically.
 
-from pydantic_harness.memory import FileStore, InMemoryStore, Memory, MemoryEntry, MemoryEntryDict, MemoryStore
+from pydantic_harness.memory import DictMemoryStore, FileMemoryStore, Memory, MemoryEntry, MemoryEntryDict, MemoryStore
 
 __all__: list[str] = [
-    'FileStore',
-    'InMemoryStore',
+    'DictMemoryStore',
+    'FileMemoryStore',
     'Memory',
     'MemoryEntry',
     'MemoryEntryDict',

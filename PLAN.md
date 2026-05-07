@@ -16,8 +16,8 @@ Implements a `Memory` capability (`AbstractCapability` subclass) that provides p
 ### Storage
 
 - **`MemoryStore`** protocol: pluggable backend with `get`, `put`, `delete`, `list_all`, `search`
-- **`InMemoryStore`**: dict-based, ephemeral, for testing (default)
-- **`FileStore`**: JSON file on disk, reads on init, writes on every mutation
+- **`DictMemoryStore`**: dict-based, ephemeral, for testing (default)
+- **`FileMemoryStore`**: JSON file on disk, reads on init, writes on every mutation
 
 ### Memory Model
 
@@ -31,13 +31,13 @@ Implements a `Memory` capability (`AbstractCapability` subclass) that provides p
 ### Spec Serialization
 
 - `Memory.get_serialization_name()` returns `"Memory"`
-- `Memory.from_spec(backend="file", path="...")` creates a `FileStore`-backed instance
+- `Memory.from_spec(backend="file", path="...")` creates a `FileMemoryStore`-backed instance
 
 ## Configuration
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `store` | `InMemoryStore()` | Storage backend |
+| `store` | `DictMemoryStore()` | Storage backend |
 | `inject_memories_in_instructions` | `True` | Include memories in system prompt |
 | `max_instructions_memories` | `20` | Cap on memories injected into prompt |
 

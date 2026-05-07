@@ -1,8 +1,8 @@
 """Memory capability for persistent agent memory across sessions.
 
 Provides tools for saving, recalling, searching, listing, and deleting
-key-value memories, with pluggable storage backends (`InMemoryStore` for
-testing, `FileStore` for on-disk persistence).
+key-value memories, with pluggable storage backends (`DictMemoryStore` for
+testing, `FileMemoryStore` for on-disk persistence).
 """
 
 from __future__ import annotations
@@ -237,7 +237,7 @@ class _BaseDictStore:
         return [entry for _, entry in scored]
 
 
-class InMemoryStore(_BaseDictStore):
+class DictMemoryStore(_BaseDictStore):
     """Dict-based in-memory store, suitable for testing.
 
     All data lives in a plain `dict` and is lost when the process exits.
@@ -248,7 +248,7 @@ class InMemoryStore(_BaseDictStore):
         self._entries: dict[str, MemoryEntry] = {}
 
 
-class FileStore(_BaseDictStore):
+class FileMemoryStore(_BaseDictStore):
     """JSON-file-based store for simple on-disk persistence.
 
     Reads the file on initialization and writes back on every mutation.
@@ -316,14 +316,14 @@ class Memory(AbstractCapability[AgentDepsT]):
     Example:
         ```python {test="skip" lint="skip"}
         from pydantic_ai import Agent
-        from pydantic_harness.memory import Memory, InMemoryStore
+        from pydantic_harness.memory import Memory, DictMemoryStore
 
-        agent = Agent('openai:gpt-4o', capabilities=[Memory(store=InMemoryStore())])
+        agent = Agent('openai:gpt-4o', capabilities=[Memory(store=DictMemoryStore())])
         ```
     """
 
-    store: MemoryStore = field(default_factory=InMemoryStore)
-    """The storage backend. Defaults to `InMemoryStore` (ephemeral, dict-based)."""
+    store: MemoryStore = field(default_factory=DictMemoryStore)
+    """The storage backend. Defaults to `DictMemoryStore` (ephemeral, dict-based)."""
 
     inject_memories_in_instructions: bool = True
     """Whether to inject existing memories into the system prompt at run start."""
@@ -355,9 +355,9 @@ class Memory(AbstractCapability[AgentDepsT]):
         """
         store: MemoryStore
         if backend == 'memory':
-            store = InMemoryStore()
+            store = DictMemoryStore()
         elif backend == 'file':
-            store = FileStore(path)
+            store = FileMemoryStore(path)
         else:
             raise ValueError(f'Unknown memory backend: {backend!r}. Use "memory" or "file".')
         return cls(

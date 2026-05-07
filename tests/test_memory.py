@@ -13,8 +13,8 @@ from pydantic_ai.toolsets.function import FunctionToolset
 from pydantic_ai.usage import RunUsage
 
 from pydantic_harness.memory import (
-    FileStore,
-    InMemoryStore,
+    DictMemoryStore,
+    FileMemoryStore,
     Memory,
     MemoryEntry,
     MemoryStore,
@@ -168,22 +168,22 @@ class TestSimpleSimilarity:
         assert not _simple_similarity('abcdefghij', 'abcdefghik')
 
 
-# --- InMemoryStore ---
+# --- DictMemoryStore ---
 
 
-class TestInMemoryStore:
+class TestDictMemoryStore:
     def test_put_and_get(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         entry = MemoryEntry(key='greeting', content='hello')
         store.put(entry)
         assert store.get('greeting') is entry
 
     def test_get_missing(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         assert store.get('nope') is None
 
     def test_put_overwrites(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='k', content='v1'))
         store.put(MemoryEntry(key='k', content='v2'))
         result = store.get('k')
@@ -191,21 +191,21 @@ class TestInMemoryStore:
         assert result.content == 'v2'
 
     def test_delete_existing(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='k', content='v'))
         assert store.delete('k') is True
         assert store.get('k') is None
 
     def test_delete_missing(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         assert store.delete('nope') is False
 
     def test_list_all_empty(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         assert store.list_all() == []
 
     def test_list_all(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='a', content='alpha'))
         store.put(MemoryEntry(key='b', content='beta'))
         entries = store.list_all()
@@ -213,7 +213,7 @@ class TestInMemoryStore:
         assert {e.key for e in entries} == {'a', 'b'}
 
     def test_list_all_filters_expired(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         store.put(MemoryEntry(key='alive', content='fresh'))
         store.put(MemoryEntry(key='dead', content='stale', expires_at=past))
@@ -222,13 +222,13 @@ class TestInMemoryStore:
         assert entries[0].key == 'alive'
 
     def test_get_filters_expired(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         store.put(MemoryEntry(key='dead', content='stale', expires_at=past))
         assert store.get('dead') is None
 
     def test_list_all_scope_filter(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='a', content='x', scope='project'))
         store.put(MemoryEntry(key='b', content='y', scope='global'))
         entries = store.list_all(scope='project')
@@ -236,13 +236,13 @@ class TestInMemoryStore:
         assert entries[0].key == 'a'
 
     def test_list_all_scope_none_returns_all(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='a', content='x', scope='project'))
         store.put(MemoryEntry(key='b', content='y', scope='global'))
         assert len(store.list_all(scope=None)) == 2
 
     def test_search_by_key(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='user_name', content='Alice'))
         store.put(MemoryEntry(key='color', content='blue'))
         results = store.search('user')
@@ -250,7 +250,7 @@ class TestInMemoryStore:
         assert results[0].key == 'user_name'
 
     def test_search_by_content(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='k1', content='the quick brown fox'))
         store.put(MemoryEntry(key='k2', content='lazy dog'))
         results = store.search('fox')
@@ -258,7 +258,7 @@ class TestInMemoryStore:
         assert results[0].key == 'k1'
 
     def test_search_by_tag(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='k1', content='x', tags=['important']))
         store.put(MemoryEntry(key='k2', content='y', tags=['trivial']))
         results = store.search('important')
@@ -266,18 +266,18 @@ class TestInMemoryStore:
         assert results[0].key == 'k1'
 
     def test_search_case_insensitive(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='K1', content='Hello World'))
         results = store.search('hello')
         assert len(results) == 1
 
     def test_search_no_results(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='k', content='v'))
         assert store.search('zzz') == []
 
     def test_search_filters_expired(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         store.put(MemoryEntry(key='alive', content='hello world'))
         store.put(MemoryEntry(key='dead', content='hello world', expires_at=past))
@@ -286,7 +286,7 @@ class TestInMemoryStore:
         assert results[0].key == 'alive'
 
     def test_search_scope_filter(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='a', content='hello world', scope='project'))
         store.put(MemoryEntry(key='b', content='hello world', scope='global'))
         results = store.search('hello', scope='project')
@@ -294,7 +294,7 @@ class TestInMemoryStore:
         assert results[0].key == 'a'
 
     def test_search_relevance_ordering(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         # 'hello' appears in key + content = score 2
         store.put(MemoryEntry(key='hello', content='hello there'))
         # 'hello' appears only in content = score 1
@@ -305,58 +305,58 @@ class TestInMemoryStore:
         assert results[1].key == 'other'
 
     def test_search_empty_query(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='k', content='v'))
         assert store.search('') == []
 
 
-# --- FileStore ---
+# --- FileMemoryStore ---
 
 
-class TestFileStore:
+class TestFileMemoryStore:
     def test_put_and_get(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         store.put(MemoryEntry(key='k', content='v'))
         assert store.get('k') is not None
         assert store.get('k').content == 'v'  # type: ignore[union-attr]
 
     def test_persistence(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store1 = FileStore(path)
+        store1 = FileMemoryStore(path)
         store1.put(MemoryEntry(key='k', content='persisted'))
 
         # New store instance should load from disk
-        store2 = FileStore(path)
+        store2 = FileMemoryStore(path)
         result = store2.get('k')
         assert result is not None
         assert result.content == 'persisted'
 
     def test_delete_saves(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         store.put(MemoryEntry(key='k', content='v'))
         store.delete('k')
 
         # Reload and verify deletion persisted
-        store2 = FileStore(path)
+        store2 = FileMemoryStore(path)
         assert store2.get('k') is None
 
     def test_delete_missing(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         assert store.delete('nope') is False
 
     def test_list_all(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         store.put(MemoryEntry(key='a', content='alpha'))
         store.put(MemoryEntry(key='b', content='beta'))
         assert len(store.list_all()) == 2
 
     def test_search(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         store.put(MemoryEntry(key='k1', content='hello', tags=['greeting']))
         store.put(MemoryEntry(key='k2', content='world'))
         assert len(store.search('greeting')) == 1
@@ -365,18 +365,18 @@ class TestFileStore:
     def test_empty_file(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
         # File does not exist yet
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         assert store.list_all() == []
 
     def test_creates_parent_dirs(self, tmp_path: Path) -> None:
         path = tmp_path / 'sub' / 'dir' / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         store.put(MemoryEntry(key='k', content='v'))
         assert path.exists()
 
     def test_file_format(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         store.put(MemoryEntry(key='k', content='v', tags=['t'], created_at='c', updated_at='u'))
         raw = json.loads(path.read_text())
         assert raw == {
@@ -393,7 +393,7 @@ class TestFileStore:
 
     def test_list_all_filters_expired(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         store.put(MemoryEntry(key='alive', content='x'))
         store.put(MemoryEntry(key='dead', content='y', expires_at=past))
@@ -401,7 +401,7 @@ class TestFileStore:
 
     def test_search_filters_expired(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         store.put(MemoryEntry(key='alive', content='hello world'))
         store.put(MemoryEntry(key='dead', content='hello world', expires_at=past))
@@ -409,47 +409,47 @@ class TestFileStore:
 
     def test_list_all_scope(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         store.put(MemoryEntry(key='a', content='x', scope='project'))
         store.put(MemoryEntry(key='b', content='y', scope='global'))
         assert len(store.list_all(scope='project')) == 1
 
     def test_search_scope(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         store.put(MemoryEntry(key='a', content='hello world', scope='project'))
         store.put(MemoryEntry(key='b', content='hello world', scope='global'))
         assert len(store.search('hello', scope='project')) == 1
 
     def test_search_empty_query(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         store.put(MemoryEntry(key='k', content='v'))
         assert store.search('') == []
 
     def test_load_malformed_json(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
         path.write_text('not json at all', encoding='utf-8')
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         assert store.list_all() == []
 
     def test_load_wrong_structure(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
         path.write_text('["a", "b"]', encoding='utf-8')
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         assert store.list_all() == []
 
     def test_load_missing_entry_fields(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
         path.write_text('{"k": {"not_a_key": "oops"}}', encoding='utf-8')
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         assert store.list_all() == []
 
     def test_scope_persists(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store1 = FileStore(path)
+        store1 = FileMemoryStore(path)
         store1.put(MemoryEntry(key='k', content='v', scope='session'))
-        store2 = FileStore(path)
+        store2 = FileMemoryStore(path)
         entry = store2.get('k')
         assert entry is not None
         assert entry.scope == 'session'
@@ -457,16 +457,16 @@ class TestFileStore:
     def test_expires_at_persists(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
         future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-        store1 = FileStore(path)
+        store1 = FileMemoryStore(path)
         store1.put(MemoryEntry(key='k', content='v', expires_at=future))
-        store2 = FileStore(path)
+        store2 = FileMemoryStore(path)
         entry = store2.get('k')
         assert entry is not None
         assert entry.expires_at == future
 
     def test_save_drops_expired(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         store.put(MemoryEntry(key='dead', content='stale', expires_at=past))
         store.put(MemoryEntry(key='alive', content='fresh'))
@@ -477,7 +477,7 @@ class TestFileStore:
 
     def test_get_filters_expired(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
-        store = FileStore(path)
+        store = FileMemoryStore(path)
         future = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
         store.put(MemoryEntry(key='soon', content='v', expires_at=future))
         # Manually backdate by mutating the in-memory entry's expires_at
@@ -538,12 +538,12 @@ class TestMemoryCapability:
 
     def test_from_spec_default(self) -> None:
         cap = Memory.from_spec()
-        assert isinstance(cap.store, InMemoryStore)
+        assert isinstance(cap.store, DictMemoryStore)
 
     def test_from_spec_file(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
         cap = Memory.from_spec(backend='file', path=str(path))
-        assert isinstance(cap.store, FileStore)
+        assert isinstance(cap.store, FileMemoryStore)
 
     def test_from_spec_unknown_backend(self) -> None:
         import pytest
@@ -553,7 +553,7 @@ class TestMemoryCapability:
 
     def test_from_spec_explicit_memory_backend(self) -> None:
         cap = Memory.from_spec(backend='memory')
-        assert isinstance(cap.store, InMemoryStore)
+        assert isinstance(cap.store, DictMemoryStore)
 
     def test_from_spec_with_options(self, tmp_path: Path) -> None:
         cap = Memory.from_spec(
@@ -562,13 +562,13 @@ class TestMemoryCapability:
             inject_memories_in_instructions=False,
             max_instructions_memories=10,
         )
-        assert isinstance(cap.store, FileStore)
+        assert isinstance(cap.store, FileMemoryStore)
         assert cap.inject_memories_in_instructions is False
         assert cap.max_instructions_memories == 10
 
     def test_default_store(self) -> None:
         cap: Memory[None] = Memory()
-        assert isinstance(cap.store, InMemoryStore)
+        assert isinstance(cap.store, DictMemoryStore)
 
     def test_get_toolset_returns_function_toolset(self) -> None:
         cap: Memory[None] = Memory()
@@ -590,14 +590,14 @@ class TestMemoryTools:
     """Test the tool functions exposed by the Memory capability."""
 
     @staticmethod
-    def _get_tools(store: InMemoryStore | None = None) -> dict[str, Any]:
-        cap: Memory[None] = Memory(store=store or InMemoryStore())
+    def _get_tools(store: DictMemoryStore | None = None) -> dict[str, Any]:
+        cap: Memory[None] = Memory(store=store or DictMemoryStore())
         toolset = cap.get_toolset()
         assert isinstance(toolset, FunctionToolset)
         return {name: tool.function for name, tool in toolset.tools.items()}
 
     def test_save_and_recall(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = self._get_tools(store)
         result = tools['save_memory']('greeting', 'hello world')
         assert result == 'Memory saved: greeting'
@@ -610,14 +610,14 @@ class TestMemoryTools:
         assert 'No memory found' in tools['recall_memory']('nope')
 
     def test_recall_expired(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         store.put(MemoryEntry(key='old', content='stale', expires_at=past))
         tools = self._get_tools(store)
         assert 'No memory found' in tools['recall_memory']('old')
 
     def test_save_updates_existing(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = self._get_tools(store)
         tools['save_memory']('k', 'v1')
         original = store.get('k')
@@ -632,7 +632,7 @@ class TestMemoryTools:
         assert updated.created_at == original_created
 
     def test_save_with_tags(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = self._get_tools(store)
         tools['save_memory']('k', 'v', ['tag1', 'tag2'])
         entry = store.get('k')
@@ -640,7 +640,7 @@ class TestMemoryTools:
         assert entry.tags == ['tag1', 'tag2']
 
     def test_save_with_scope(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = self._get_tools(store)
         tools['save_memory']('k', 'v', None, 'project')
         entry = store.get('k')
@@ -648,7 +648,7 @@ class TestMemoryTools:
         assert entry.scope == 'project'
 
     def test_save_with_ttl(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = self._get_tools(store)
         tools['save_memory']('k', 'v', None, 'global', 60)
         entry = store.get('k')
@@ -660,7 +660,7 @@ class TestMemoryTools:
         assert expires < datetime.now(timezone.utc) + timedelta(minutes=61)
 
     def test_search(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = self._get_tools(store)
         tools['save_memory']('user_name', 'Alice')
         tools['save_memory']('color', 'blue')
@@ -674,7 +674,7 @@ class TestMemoryTools:
         assert 'No memories found' in tools['search_memories']('zzz')
 
     def test_search_with_scope(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = self._get_tools(store)
         tools['save_memory']('a', 'hello world', None, 'project')
         tools['save_memory']('b', 'hello world', None, 'global')
@@ -687,7 +687,7 @@ class TestMemoryTools:
         assert tools['list_memories']() == 'No memories stored.'
 
     def test_list_with_entries(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = self._get_tools(store)
         tools['save_memory']('a', 'alpha')
         tools['save_memory']('b', 'beta')
@@ -696,7 +696,7 @@ class TestMemoryTools:
         assert '[b] beta' in result
 
     def test_list_with_scope(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = self._get_tools(store)
         tools['save_memory']('a', 'alpha', None, 'project')
         tools['save_memory']('b', 'beta', None, 'global')
@@ -705,7 +705,7 @@ class TestMemoryTools:
         assert '[b]' not in result
 
     def test_delete_existing(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = self._get_tools(store)
         tools['save_memory']('k', 'v')
         assert tools['delete_memory']('k') == 'Memory deleted: k'
@@ -716,7 +716,7 @@ class TestMemoryTools:
         assert 'No memory found' in tools['delete_memory']('nope')
 
     def test_save_with_ttl_zero(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = self._get_tools(store)
         tools['save_memory']('k', 'v', None, 'global', 0)
         # TTL=0 expires immediately; get() filters it out
@@ -730,7 +730,7 @@ class TestMemoryTools:
 
 class TestDedupWarning:
     def test_similar_key_logs_warning(self, caplog: Any) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = TestMemoryTools._get_tools(store)
         tools['save_memory']('abcdefghij_x', 'first value')
         with caplog.at_level(logging.WARNING, logger='pydantic_harness.memory'):
@@ -738,7 +738,7 @@ class TestDedupWarning:
         assert any('possible duplicate' in record.message.lower() for record in caplog.records)
 
     def test_different_keys_no_warning(self, caplog: Any) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = TestMemoryTools._get_tools(store)
         tools['save_memory']('first_key_long', 'first value')
         with caplog.at_level(logging.WARNING, logger='pydantic_harness.memory'):
@@ -746,7 +746,7 @@ class TestDedupWarning:
         assert not any('possible duplicate' in record.message.lower() for record in caplog.records)
 
     def test_short_keys_no_warning(self, caplog: Any) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         tools = TestMemoryTools._get_tools(store)
         tools['save_memory']('abc', 'first value')
         with caplog.at_level(logging.WARNING, logger='pydantic_harness.memory'):
@@ -779,7 +779,7 @@ class TestMemoryInstructions:
         assert 'Currently stored memories' not in text
 
     def test_instructions_with_memories(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='user', content='Alice'))
         cap: Memory[None] = Memory(store=store)
         text = cap.build_instructions(self._make_ctx())
@@ -787,7 +787,7 @@ class TestMemoryInstructions:
         assert '[user] Alice' in text
 
     def test_instructions_respects_max(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         for i in range(25):
             store.put(MemoryEntry(key=f'k{i}', content=f'v{i}'))
         cap: Memory[None] = Memory(store=store, max_instructions_memories=5)
@@ -795,14 +795,14 @@ class TestMemoryInstructions:
         assert '... and 20 more' in text
 
     def test_instructions_disabled(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         store.put(MemoryEntry(key='k', content='v'))
         cap: Memory[None] = Memory(store=store, inject_memories_in_instructions=False)
         text = cap.build_instructions(self._make_ctx())
         assert 'Currently stored memories' not in text
 
     def test_instructions_exact_max_no_overflow(self) -> None:
-        store = InMemoryStore()
+        store = DictMemoryStore()
         for i in range(5):
             store.put(MemoryEntry(key=f'k{i}', content=f'v{i}'))
         cap: Memory[None] = Memory(store=store, max_instructions_memories=5)
@@ -817,10 +817,10 @@ class TestMemoryInstructions:
 
 class TestMemoryStoreProtocol:
     def test_in_memory_store_satisfies_protocol(self) -> None:
-        assert isinstance(InMemoryStore(), MemoryStore)
+        assert isinstance(DictMemoryStore(), MemoryStore)
 
     def test_file_store_satisfies_protocol(self, tmp_path: Path) -> None:
-        assert isinstance(FileStore(tmp_path / 'mem.json'), MemoryStore)
+        assert isinstance(FileMemoryStore(tmp_path / 'mem.json'), MemoryStore)
 
 
 # --- AbstractCapability conformance ---

@@ -10,7 +10,7 @@ import sys
 import logfire
 from pydantic_ai import Agent
 
-from pydantic_harness.memory import InMemoryStore, Memory
+from pydantic_harness.memory import DictMemoryStore, Memory
 
 logfire.configure(send_to_logfire='if-token-present')
 logfire.instrument_openai()
@@ -18,7 +18,7 @@ logfire.instrument_openai()
 
 def main() -> None:
     """Run the study coach example."""
-    store = InMemoryStore()
+    store = DictMemoryStore()
     memory = Memory(store=store)
 
     agent = Agent(

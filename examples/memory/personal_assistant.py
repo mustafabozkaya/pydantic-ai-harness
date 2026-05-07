@@ -1,6 +1,6 @@
 """Personal Assistant — remembers user preferences across sessions.
 
-Demonstrates: FileStore persistence, save/recall, instructions injection, tags, scoping.
+Demonstrates: FileMemoryStore persistence, save/recall, instructions injection, tags, scoping.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 import logfire
 from pydantic_ai import Agent
 
-from pydantic_harness.memory import FileStore, Memory
+from pydantic_harness.memory import FileMemoryStore, Memory
 
 logfire.configure(send_to_logfire='if-token-present')
 logfire.instrument_openai()
@@ -22,7 +22,7 @@ def main() -> None:
     """Run the personal assistant example."""
     with tempfile.TemporaryDirectory() as tmpdir:
         mem_path = Path(tmpdir) / 'preferences.json'
-        store = FileStore(mem_path)
+        store = FileMemoryStore(mem_path)
         memory = Memory(store=store)
 
         agent = Agent(
@@ -51,7 +51,7 @@ def main() -> None:
         assert 'alice' in all_content or any('alice' in e.key.lower() for e in entries), 'Expected a memory about Alice'
 
         # --- Session 2: new agent instance loads from same file (persistence) ---
-        store2 = FileStore(mem_path)
+        store2 = FileMemoryStore(mem_path)
         memory2 = Memory(store=store2)
         agent2 = Agent(
             'openai:gpt-4o-mini',
@@ -61,7 +61,7 @@ def main() -> None:
 
         loaded_entries = store2.list_all()
         print(f'\nMemories loaded in session 2: {len(loaded_entries)}')
-        assert len(loaded_entries) == len(entries), 'FileStore persistence failed'
+        assert len(loaded_entries) == len(entries), 'FileMemoryStore persistence failed'
 
         with logfire.span('session-2-recall-preferences'):
             result2 = agent2.run_sync('What do you know about me?')
