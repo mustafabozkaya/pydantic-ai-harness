@@ -27,7 +27,7 @@ def main() -> None:
         system_prompt=(
             'You are a coding assistant that learns from user corrections. '
             'When the user gives you a coding rule or correction, save it as a memory '
-            'with scope "rules" and tags like ["python", "style"] or ["typescript", "testing"]. '
+            'with namespace ["rules"] and tags like ["python", "style"] or ["typescript", "testing"]. '
             'Use descriptive keys like "rule_python_fstrings" or "rule_ts_const". '
             'When asked to write code, search your memories for relevant rules first.'
         ),
@@ -46,7 +46,7 @@ def main() -> None:
     rules = store.list_all()
     print(f'\nRules stored: {len(rules)}')
     for r in rules:
-        print(f'  [{r.key}] {r.content} (scope={r.scope}, tags={r.tags})')
+        print(f'  [{r.key}] {r.content} (namespace={r.namespace}, tags={r.tags})')
 
     assert len(rules) >= 3, f'Expected at least 3 rules saved, got {len(rules)}'
 

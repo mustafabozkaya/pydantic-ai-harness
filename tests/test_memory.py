@@ -32,7 +32,7 @@ class TestMemoryEntry:
             key='k',
             content='v',
             tags=['a', 'b'],
-            scope='project',
+            namespace=('project',),
             expires_at='2099-01-01T00:00:00+00:00',
             created_at='t1',
             updated_at='t2',
@@ -42,7 +42,7 @@ class TestMemoryEntry:
     def test_from_dict_defaults(self) -> None:
         entry = MemoryEntry.from_dict({'key': 'k', 'content': 'v'})
         assert entry.tags == []
-        assert entry.scope == 'global'
+        assert entry.namespace == ('global',)
         assert entry.expires_at is None
         assert entry.created_at == ''
         assert entry.updated_at == ''
@@ -52,9 +52,9 @@ class TestMemoryEntry:
         assert entry.created_at  # non-empty ISO string
         assert entry.updated_at
 
-    def test_default_scope(self) -> None:
+    def test_default_namespace(self) -> None:
         entry = MemoryEntry(key='k', content='v')
-        assert entry.scope == 'global'
+        assert entry.namespace == ('global',)
 
     def test_is_expired_no_expiry(self) -> None:
         entry = MemoryEntry(key='k', content='v')
@@ -259,17 +259,17 @@ class TestDictMemoryStore:
 
     def test_list_all_scope_filter(self) -> None:
         store = DictMemoryStore()
-        store.put(MemoryEntry(key='a', content='x', scope='project'))
-        store.put(MemoryEntry(key='b', content='y', scope='global'))
-        entries = store.list_all(scope='project')
+        store.put(MemoryEntry(key='a', content='x', namespace=('project',)))
+        store.put(MemoryEntry(key='b', content='y', namespace=('global',)))
+        entries = store.list_all(namespace=('project',))
         assert len(entries) == 1
         assert entries[0].key == 'a'
 
     def test_list_all_scope_none_returns_all(self) -> None:
         store = DictMemoryStore()
-        store.put(MemoryEntry(key='a', content='x', scope='project'))
-        store.put(MemoryEntry(key='b', content='y', scope='global'))
-        assert len(store.list_all(scope=None)) == 2
+        store.put(MemoryEntry(key='a', content='x', namespace=('project',)))
+        store.put(MemoryEntry(key='b', content='y', namespace=('global',)))
+        assert len(store.list_all(namespace=None)) == 2
 
     def test_search_by_key(self) -> None:
         store = DictMemoryStore()
@@ -317,9 +317,9 @@ class TestDictMemoryStore:
 
     def test_search_scope_filter(self) -> None:
         store = DictMemoryStore()
-        store.put(MemoryEntry(key='a', content='hello world', scope='project'))
-        store.put(MemoryEntry(key='b', content='hello world', scope='global'))
-        results = store.search('hello', scope='project')
+        store.put(MemoryEntry(key='a', content='hello world', namespace=('project',)))
+        store.put(MemoryEntry(key='b', content='hello world', namespace=('global',)))
+        results = store.search('hello', namespace=('project',))
         assert len(results) == 1
         assert results[0].key == 'a'
 
@@ -338,6 +338,44 @@ class TestDictMemoryStore:
         store = DictMemoryStore()
         store.put(MemoryEntry(key='k', content='v'))
         assert store.search('') == []
+
+    def test_list_namespaces(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='a', content='x', namespace=('users', 'alice')))
+        store.put(MemoryEntry(key='b', content='y', namespace=('users', 'bob')))
+        store.put(MemoryEntry(key='c', content='z', namespace=('agents', 'planner')))
+        assert store.list_namespaces() == [('agents', 'planner'), ('users', 'alice'), ('users', 'bob')]
+
+    def test_list_namespaces_prefix(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='a', content='x', namespace=('users', 'alice')))
+        store.put(MemoryEntry(key='b', content='y', namespace=('agents', 'planner')))
+        assert store.list_namespaces(prefix=('users',)) == [('users', 'alice')]
+
+    def test_list_namespaces_max_depth(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='a', content='x', namespace=('users', 'alice', 'prefs')))
+        store.put(MemoryEntry(key='b', content='y', namespace=('users', 'bob', 'prefs')))
+        # Truncate to depth 1 → both collapse to ('users',)
+        assert store.list_namespaces(max_depth=1) == [('users',)]
+
+    def test_list_namespaces_suffix(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='a', content='x', namespace=('users', 'alice', 'prefs')))
+        store.put(MemoryEntry(key='b', content='y', namespace=('agents', 'planner', 'prefs')))
+        assert store.list_namespaces(suffix=('prefs',)) == [
+            ('agents', 'planner', 'prefs'),
+            ('users', 'alice', 'prefs'),
+        ]
+
+    def test_list_all_namespace_prefix_match(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='a', content='x', namespace=('users', 'alice')))
+        store.put(MemoryEntry(key='b', content='y', namespace=('users', 'bob')))
+        store.put(MemoryEntry(key='c', content='z', namespace=('agents',)))
+        # Prefix ('users',) matches both alice and bob
+        results = store.list_all(namespace=('users',))
+        assert {e.key for e in results} == {'a', 'b'}
 
 
 # --- FileMemoryStore ---
@@ -414,7 +452,7 @@ class TestFileMemoryStore:
                 'key': 'k',
                 'content': 'v',
                 'tags': ['t'],
-                'scope': 'global',
+                'namespace': ['global'],
                 'expires_at': None,
                 'created_at': 'c',
                 'updated_at': 'u',
@@ -445,16 +483,16 @@ class TestFileMemoryStore:
     def test_list_all_scope(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
         store = FileMemoryStore(path)
-        store.put(MemoryEntry(key='a', content='x', scope='project'))
-        store.put(MemoryEntry(key='b', content='y', scope='global'))
-        assert len(store.list_all(scope='project')) == 1
+        store.put(MemoryEntry(key='a', content='x', namespace=('project',)))
+        store.put(MemoryEntry(key='b', content='y', namespace=('global',)))
+        assert len(store.list_all(namespace=('project',))) == 1
 
     def test_search_scope(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
         store = FileMemoryStore(path)
-        store.put(MemoryEntry(key='a', content='hello world', scope='project'))
-        store.put(MemoryEntry(key='b', content='hello world', scope='global'))
-        assert len(store.search('hello', scope='project')) == 1
+        store.put(MemoryEntry(key='a', content='hello world', namespace=('project',)))
+        store.put(MemoryEntry(key='b', content='hello world', namespace=('global',)))
+        assert len(store.search('hello', namespace=('project',))) == 1
 
     def test_search_empty_query(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
@@ -480,14 +518,23 @@ class TestFileMemoryStore:
         store = FileMemoryStore(path)
         assert store.list_all() == []
 
-    def test_scope_persists(self, tmp_path: Path) -> None:
+    def test_namespace_persists(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
         store1 = FileMemoryStore(path)
-        store1.put(MemoryEntry(key='k', content='v', scope='session'))
+        store1.put(MemoryEntry(key='k', content='v', namespace=('session',)))
         store2 = FileMemoryStore(path)
         entry = store2.get('k')
         assert entry is not None
-        assert entry.scope == 'session'
+        assert entry.namespace == ('session',)
+
+    def test_nested_namespace_persists(self, tmp_path: Path) -> None:
+        path = tmp_path / 'mem.json'
+        store1 = FileMemoryStore(path)
+        store1.put(MemoryEntry(key='k', content='v', namespace=('users', 'alice', 'prefs')))
+        store2 = FileMemoryStore(path)
+        entry = store2.get('k')
+        assert entry is not None
+        assert entry.namespace == ('users', 'alice', 'prefs')
 
     def test_expires_at_persists(self, tmp_path: Path) -> None:
         path = tmp_path / 'mem.json'
@@ -533,12 +580,16 @@ class TestFormatEntry:
         entry = MemoryEntry(key='k', content='hello', tags=['a', 'b'])
         assert format_entry(entry) == '[k] hello (tags: a, b)'
 
-    def test_with_scope(self) -> None:
-        entry = MemoryEntry(key='k', content='hello', scope='project')
-        assert format_entry(entry) == '[k] hello (scope: project)'
+    def test_with_namespace(self) -> None:
+        entry = MemoryEntry(key='k', content='hello', namespace=('project',))
+        assert format_entry(entry) == '[k] hello (namespace: project)'
 
-    def test_global_scope_omitted(self) -> None:
-        entry = MemoryEntry(key='k', content='hello', scope='global')
+    def test_with_nested_namespace(self) -> None:
+        entry = MemoryEntry(key='k', content='hello', namespace=('users', 'alice'))
+        assert format_entry(entry) == '[k] hello (namespace: users/alice)'
+
+    def test_global_namespace_omitted(self) -> None:
+        entry = MemoryEntry(key='k', content='hello', namespace=('global',))
         assert format_entry(entry) == '[k] hello'
 
     def test_with_expires_at(self) -> None:
@@ -550,10 +601,10 @@ class TestFormatEntry:
             key='k',
             content='hello',
             tags=['t'],
-            scope='project',
+            namespace=('project',),
             expires_at='2099-01-01T00:00:00+00:00',
         )
-        assert format_entry(entry) == '[k] hello (tags: t; scope: project; expires: 2099-01-01T00:00:00+00:00)'
+        assert format_entry(entry) == '[k] hello (tags: t; namespace: project; expires: 2099-01-01T00:00:00+00:00)'
 
     def test_empty_content(self) -> None:
         entry = MemoryEntry(key='k', content='')
@@ -674,18 +725,26 @@ class TestMemoryTools:
         assert entry is not None
         assert entry.tags == ['tag1', 'tag2']
 
-    def test_save_with_scope(self) -> None:
+    def test_save_with_namespace(self) -> None:
         store = DictMemoryStore()
         tools = self._get_tools(store)
-        tools['save_memory']('k', 'v', None, 'project')
+        tools['save_memory']('k', 'v', None, ['project'])
         entry = store.get('k')
         assert entry is not None
-        assert entry.scope == 'project'
+        assert entry.namespace == ('project',)
+
+    def test_save_with_nested_namespace(self) -> None:
+        store = DictMemoryStore()
+        tools = self._get_tools(store)
+        tools['save_memory']('k', 'v', None, ['users', 'alice'])
+        entry = store.get('k')
+        assert entry is not None
+        assert entry.namespace == ('users', 'alice')
 
     def test_save_with_ttl(self) -> None:
         store = DictMemoryStore()
         tools = self._get_tools(store)
-        tools['save_memory']('k', 'v', None, 'global', 60)
+        tools['save_memory']('k', 'v', None, ['global'], 60)
         entry = store.get('k')
         assert entry is not None
         assert entry.expires_at is not None
@@ -711,9 +770,9 @@ class TestMemoryTools:
     def test_search_with_scope(self) -> None:
         store = DictMemoryStore()
         tools = self._get_tools(store)
-        tools['save_memory']('a', 'hello world', None, 'project')
-        tools['save_memory']('b', 'hello world', None, 'global')
-        result = tools['search_memories']('hello', 'project')
+        tools['save_memory']('a', 'hello world', None, ['project'])
+        tools['save_memory']('b', 'hello world', None, ['global'])
+        result = tools['search_memories']('hello', ['project'])
         assert '[a]' in result
         assert '[b]' not in result
 
@@ -733,9 +792,9 @@ class TestMemoryTools:
     def test_list_with_scope(self) -> None:
         store = DictMemoryStore()
         tools = self._get_tools(store)
-        tools['save_memory']('a', 'alpha', None, 'project')
-        tools['save_memory']('b', 'beta', None, 'global')
-        result = tools['list_memories']('project')
+        tools['save_memory']('a', 'alpha', None, ['project'])
+        tools['save_memory']('b', 'beta', None, ['global'])
+        result = tools['list_memories'](['project'])
         assert '[a] alpha' in result
         assert '[b]' not in result
 
@@ -753,7 +812,7 @@ class TestMemoryTools:
     def test_save_with_ttl_zero(self) -> None:
         store = DictMemoryStore()
         tools = self._get_tools(store)
-        tools['save_memory']('k', 'v', None, 'global', 0)
+        tools['save_memory']('k', 'v', None, ['global'], 0)
         # TTL=0 expires immediately; get() filters it out
         assert store.get('k') is None
         # recall_memory should likewise report no memory
@@ -762,7 +821,7 @@ class TestMemoryTools:
     def test_save_with_summary_and_importance(self) -> None:
         store = DictMemoryStore()
         tools = self._get_tools(store)
-        tools['save_memory']('k', 'long content here', None, 'global', None, 'short', 0.9)
+        tools['save_memory']('k', 'long content here', None, ['global'], None, 'short', 0.9)
         entry = store.get('k')
         assert entry is not None
         assert entry.summary == 'short'

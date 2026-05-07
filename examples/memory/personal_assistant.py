@@ -31,7 +31,7 @@ def main() -> None:
             system_prompt=(
                 'You are a helpful personal assistant. '
                 'When the user tells you about their preferences, save each one as a memory '
-                'with scope "user_prefs" and appropriate tags. '
+                'with namespace ["user_prefs"] and appropriate tags. '
                 'Use descriptive keys like "preferred_name" or "theme_preference".'
             ),
         )
@@ -44,7 +44,7 @@ def main() -> None:
         entries = store.list_all()
         print(f'\nMemories after session 1: {len(entries)}')
         for e in entries:
-            print(f'  [{e.key}] {e.content} (tags={e.tags}, scope={e.scope})')
+            print(f'  [{e.key}] {e.content} (tags={e.tags}, namespace={e.namespace})')
 
         assert len(entries) >= 2, f'Expected at least 2 memories saved, got {len(entries)}'
         all_content = ' '.join(e.content.lower() for e in entries)

@@ -39,7 +39,7 @@ class MemoryEntryDict(_MemoryEntryDictRequired, total=False):
     """
 
     tags: list[str]
-    scope: str
+    namespace: list[str]
     expires_at: str | None
     created_at: str
     updated_at: str
@@ -63,8 +63,14 @@ class MemoryEntry:
     tags: list[str] = field(default_factory=lambda: list[str]())
     """Optional tags for categorization and search."""
 
-    scope: str = 'global'
-    """Namespace scope for this memory (default `'global'`)."""
+    namespace: tuple[str, ...] = ('global',)
+    """Hierarchical namespace for this memory.
+
+    A tuple of strings forming a path-like namespace (e.g., `('users', 'alice')`,
+    `('agents', 'planner', 'facts')`). Filters in `list_all`/`search` use prefix
+    matching: `namespace=('users',)` matches `('users', 'alice')` and
+    `('users', 'bob')`. Default `('global',)` is a single-segment namespace.
+    """
 
     expires_at: str | None = None
     """Optional ISO 8601 expiration timestamp. `None` means no expiry."""
@@ -116,7 +122,7 @@ class MemoryEntry:
             'key': self.key,
             'content': self.content,
             'tags': self.tags,
-            'scope': self.scope,
+            'namespace': list(self.namespace),
             'expires_at': self.expires_at,
             'created_at': self.created_at,
             'updated_at': self.updated_at,
@@ -134,7 +140,7 @@ class MemoryEntry:
             key=data['key'],
             content=data['content'],
             tags=data.get('tags', []),
-            scope=data.get('scope', 'global'),
+            namespace=tuple(data.get('namespace', ('global',))),
             expires_at=data.get('expires_at'),
             created_at=data.get('created_at', ''),
             updated_at=data.get('updated_at', ''),
@@ -166,6 +172,17 @@ def _score_entry(entry: MemoryEntry, words: list[str]) -> int:
         if any(pattern.search(tag) for tag in entry.tags):
             score += 1
     return score
+
+
+def _namespace_matches(entry_ns: tuple[str, ...], filter_prefix: tuple[str, ...]) -> bool:
+    """Return True if `entry_ns` starts with `filter_prefix`.
+
+    Empty `filter_prefix` matches any namespace (use `None` in callers to mean
+    "no filter" — this helper assumes the caller has decided to filter).
+    """
+    if len(entry_ns) < len(filter_prefix):
+        return False
+    return entry_ns[: len(filter_prefix)] == filter_prefix
 
 
 def _simple_similarity(a: str, b: str) -> bool:
@@ -213,12 +230,33 @@ class MemoryStore(Protocol):
         """Delete a memory entry by key. Returns True if it existed."""
         ...
 
-    def list_all(self, *, scope: str | None = None) -> list[MemoryEntry]:  # pragma: no cover
-        """Return all non-expired entries, optionally filtered by scope."""
+    def list_all(self, *, namespace: tuple[str, ...] | None = None) -> list[MemoryEntry]:  # pragma: no cover
+        """Return all non-expired entries, optionally filtered by namespace prefix."""
         ...
 
-    def search(self, query: str, *, scope: str | None = None) -> list[MemoryEntry]:  # pragma: no cover
+    def search(
+        self,
+        query: str,
+        *,
+        namespace: tuple[str, ...] | None = None,
+    ) -> list[MemoryEntry]:  # pragma: no cover
         """Search non-expired entries with word-boundary matching, sorted by relevance."""
+        ...
+
+    def list_namespaces(  # pragma: no cover
+        self,
+        *,
+        prefix: tuple[str, ...] | None = None,
+        suffix: tuple[str, ...] | None = None,
+        max_depth: int | None = None,
+    ) -> list[tuple[str, ...]]:
+        """List unique namespaces among non-expired entries, optionally filtered.
+
+        Args:
+            prefix: Only include namespaces starting with this prefix.
+            suffix: Only include namespaces ending with this suffix.
+            max_depth: Truncate each namespace to at most this many segments before deduplication.
+        """
         ...
 
 
@@ -248,15 +286,20 @@ class _BaseDictStore:
         for key in expired_keys:
             del self._entries[key]
 
-    def list_all(self, *, scope: str | None = None) -> list[MemoryEntry]:
-        """Return all non-expired entries, optionally filtered by scope."""
+    def list_all(self, *, namespace: tuple[str, ...] | None = None) -> list[MemoryEntry]:
+        """Return all non-expired entries, optionally filtered by namespace prefix."""
         return [
             entry
             for entry in self._entries.values()
-            if not entry.is_expired() and (scope is None or entry.scope == scope)
+            if not entry.is_expired() and (namespace is None or _namespace_matches(entry.namespace, namespace))
         ]
 
-    def search(self, query: str, *, scope: str | None = None) -> list[MemoryEntry]:
+    def search(
+        self,
+        query: str,
+        *,
+        namespace: tuple[str, ...] | None = None,
+    ) -> list[MemoryEntry]:
         """Search non-expired entries with word-boundary matching, sorted by relevance."""
         words = query.lower().split()
         if not words:
@@ -265,13 +308,35 @@ class _BaseDictStore:
         for entry in self._entries.values():
             if entry.is_expired():
                 continue
-            if scope is not None and entry.scope != scope:
+            if namespace is not None and not _namespace_matches(entry.namespace, namespace):
                 continue
             score = _score_entry(entry, words)
             if score > 0:
                 scored.append((score, entry))
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return [entry for _, entry in scored]
+
+    def list_namespaces(
+        self,
+        *,
+        prefix: tuple[str, ...] | None = None,
+        suffix: tuple[str, ...] | None = None,
+        max_depth: int | None = None,
+    ) -> list[tuple[str, ...]]:
+        """List unique namespaces among non-expired entries."""
+        seen: set[tuple[str, ...]] = set()
+        for entry in self._entries.values():
+            if entry.is_expired():
+                continue
+            ns = entry.namespace
+            if max_depth is not None:
+                ns = ns[:max_depth]
+            if prefix is not None and not _namespace_matches(ns, prefix):
+                continue
+            if suffix is not None and (len(ns) < len(suffix) or ns[-len(suffix) :] != suffix):
+                continue
+            seen.add(ns)
+        return sorted(seen)
 
 
 class DictMemoryStore(_BaseDictStore):
@@ -334,8 +399,8 @@ def format_entry(entry: MemoryEntry) -> str:
     extras: list[str] = []
     if entry.tags:
         extras.append(f'tags: {", ".join(entry.tags)}')
-    if entry.scope != 'global':
-        extras.append(f'scope: {entry.scope}')
+    if entry.namespace != ('global',):
+        extras.append(f'namespace: {"/".join(entry.namespace)}')
     if entry.expires_at is not None:
         extras.append(f'expires: {entry.expires_at}')
     if extras:
@@ -436,7 +501,7 @@ class Memory(AbstractCapability[AgentDepsT]):
             key: str,
             content: str,
             tags: list[str] | None = None,
-            scope: str = 'global',
+            namespace: list[str] | None = None,
             ttl_minutes: int | None = None,
             summary: str | None = None,
             importance: float | None = None,
@@ -447,7 +512,8 @@ class Memory(AbstractCapability[AgentDepsT]):
                 key: Unique key for this memory.
                 content: The content to remember.
                 tags: Optional tags for categorization and search.
-                scope: Namespace scope (default `'global'`).
+                namespace: Optional hierarchical namespace as a list of segments
+                    (e.g., `['users', 'alice']`). Defaults to `['global']`.
                 ttl_minutes: Optional time-to-live in minutes. The entry will expire after this duration.
                 summary: Optional short summary; preferred over `content` when injecting into the system prompt.
                 importance: Optional relevance booster (e.g., 0.0–1.0); used by search scoring.
@@ -472,11 +538,12 @@ class Memory(AbstractCapability[AgentDepsT]):
             if ttl_minutes is not None:
                 expires_at = (now + timedelta(minutes=ttl_minutes)).isoformat()
 
+            ns: tuple[str, ...] = tuple(namespace) if namespace else ('global',)
             entry = MemoryEntry(
                 key=key,
                 content=content,
                 tags=tags or [],
-                scope=scope,
+                namespace=ns,
                 expires_at=expires_at,
                 created_at=existing.created_at if existing else now_iso,
                 updated_at=now_iso,
@@ -497,25 +564,27 @@ class Memory(AbstractCapability[AgentDepsT]):
                 return f'No memory found for key: {key}'
             return format_entry(entry)
 
-        def search_memories(query: str, scope: str | None = None) -> str:
+        def search_memories(query: str, namespace: list[str] | None = None) -> str:
             """Search memories by word-boundary matching on keys, content, or tags, sorted by relevance.
 
             Args:
                 query: The search query string (space-separated words).
-                scope: Optional scope to restrict the search to.
+                namespace: Optional namespace prefix to restrict the search to (e.g., `['users']`).
             """
-            results = store.search(query, scope=scope)
+            ns: tuple[str, ...] | None = tuple(namespace) if namespace else None
+            results = store.search(query, namespace=ns)
             if not results:
                 return f'No memories found matching: {query}'
             return '\n'.join(format_entry(entry) for entry in results)
 
-        def list_memories(scope: str | None = None) -> str:
-            """List all stored memories, optionally filtered by scope.
+        def list_memories(namespace: list[str] | None = None) -> str:
+            """List all stored memories, optionally filtered by namespace prefix.
 
             Args:
-                scope: Optional scope to filter by.
+                namespace: Optional namespace prefix to filter by (e.g., `['users']`).
             """
-            entries = store.list_all(scope=scope)
+            ns: tuple[str, ...] | None = tuple(namespace) if namespace else None
+            entries = store.list_all(namespace=ns)
             if not entries:
                 return 'No memories stored.'
             return '\n'.join(format_entry(entry) for entry in entries)
