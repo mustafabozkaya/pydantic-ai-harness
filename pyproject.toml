@@ -79,6 +79,7 @@ quote-style = 'single'
 [tool.pyright]
 pythonVersion = '3.10'
 typeCheckingMode = 'strict'
+exclude = ['examples', '.venv', '**/node_modules', '**/__pycache__']
 executionEnvironments = [
     { root = 'tests', reportPrivateUsage = false },
 ]
