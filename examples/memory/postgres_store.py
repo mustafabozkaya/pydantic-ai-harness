@@ -19,7 +19,7 @@ Usage:
 
     import psycopg
     from pydantic_ai import Agent
-    from pydantic_harness.memory import Memory
+    from pydantic_ai_harness.memory import Memory
     from examples.memory.postgres_store import PostgresMemoryStore
 
     conn = psycopg.connect('postgresql://localhost/myapp')
@@ -34,7 +34,7 @@ from typing import Any
 
 import psycopg
 
-from pydantic_harness.memory import MemoryEntry, RecencyScorer
+from pydantic_ai_harness.memory import MemoryEntry, RecencyScorer
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (

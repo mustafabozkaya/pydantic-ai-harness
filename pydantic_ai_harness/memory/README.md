@@ -9,7 +9,7 @@ each run.
 
 ```python
 from pydantic_ai import Agent
-from pydantic_harness import Memory
+from pydantic_ai_harness import Memory
 
 agent = Agent('openai:gpt-4o', capabilities=[Memory()])
 ```
@@ -26,7 +26,7 @@ single-process persistence, or implement `MemoryStore` for anything else.
 | `FileMemoryStore(path)` | JSON file on disk | Single-process | Single-user CLI agents |
 
 For Postgres, Redis, vector DBs, etc. — implement the `MemoryStore` Protocol.
-See [`examples/memory/postgres_store.py`](https://github.com/pydantic/pydantic-harness/blob/main/examples/memory/postgres_store.py)
+See [`examples/memory/postgres_store.py`](https://github.com/pydantic/pydantic-ai-harness/blob/main/examples/memory/postgres_store.py)
 for a reference implementation.
 
 ## `MemoryEntry` fields
@@ -64,7 +64,7 @@ One store, two agents, separate namespaces:
 
 ```python
 from pydantic_ai import Agent
-from pydantic_harness import FileMemoryStore, Memory
+from pydantic_ai_harness import FileMemoryStore, Memory
 
 shared = FileMemoryStore('/var/lib/myapp/memory.json')
 
@@ -92,7 +92,7 @@ Recency boost is enabled by default — `Memory` ships with
 `exponential_decay(half_life_days=30, weight=0.5)`. Override with any callable:
 
 ```python
-from pydantic_harness import Memory, exponential_decay
+from pydantic_ai_harness import Memory, exponential_decay
 
 # Tighter half-life for fast-moving information
 Memory(recency_scorer=exponential_decay(half_life_days=7))
@@ -140,7 +140,7 @@ Memory(tool_descriptions={
 Implement the `MemoryStore` Protocol — six methods, all positional/kwarg-only:
 
 ```python
-from pydantic_harness import MemoryEntry, MemoryStore, RecencyScorer
+from pydantic_ai_harness import MemoryEntry, MemoryStore, RecencyScorer
 
 class MyStore:
     def get(self, key: str) -> MemoryEntry | None: ...

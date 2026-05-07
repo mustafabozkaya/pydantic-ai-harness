@@ -12,15 +12,17 @@ from pydantic_ai._run_context import RunContext
 from pydantic_ai.toolsets.function import FunctionToolset
 from pydantic_ai.usage import RunUsage
 
-from pydantic_harness.memory import (
+from pydantic_ai_harness.memory import (
     DictMemoryStore,
     FileMemoryStore,
     Memory,
     MemoryEntry,
     MemoryStore,
+    exponential_decay,
+)
+from pydantic_ai_harness.memory._capability import (
     _score_entry,
     _simple_similarity,
-    exponential_decay,
     format_entry,
 )
 
@@ -945,7 +947,7 @@ class TestDedupWarning:
         store = DictMemoryStore()
         tools = TestMemoryTools._get_tools(store)
         tools['save_memory']('abcdefghij_x', 'first value')
-        with caplog.at_level(logging.WARNING, logger='pydantic_harness.memory'):
+        with caplog.at_level(logging.WARNING, logger='pydantic_ai_harness.memory'):
             tools['save_memory']('abcdefghij_y', 'second value')
         assert any('possible duplicate' in record.message.lower() for record in caplog.records)
 
@@ -953,7 +955,7 @@ class TestDedupWarning:
         store = DictMemoryStore()
         tools = TestMemoryTools._get_tools(store)
         tools['save_memory']('first_key_long', 'first value')
-        with caplog.at_level(logging.WARNING, logger='pydantic_harness.memory'):
+        with caplog.at_level(logging.WARNING, logger='pydantic_ai_harness.memory'):
             tools['save_memory']('other_key_long', 'second value')
         assert not any('possible duplicate' in record.message.lower() for record in caplog.records)
 
@@ -961,7 +963,7 @@ class TestDedupWarning:
         store = DictMemoryStore()
         tools = TestMemoryTools._get_tools(store)
         tools['save_memory']('abc', 'first value')
-        with caplog.at_level(logging.WARNING, logger='pydantic_harness.memory'):
+        with caplog.at_level(logging.WARNING, logger='pydantic_ai_harness.memory'):
             tools['save_memory']('abd', 'second value')
         assert not any('possible duplicate' in record.message.lower() for record in caplog.records)
 

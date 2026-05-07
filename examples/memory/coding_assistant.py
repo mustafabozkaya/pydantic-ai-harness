@@ -10,10 +10,10 @@ import sys
 import logfire
 from pydantic_ai import Agent
 
-from pydantic_harness.memory import DictMemoryStore, Memory
+from pydantic_ai_harness.memory import DictMemoryStore, Memory
 
 logfire.configure(send_to_logfire='if-token-present')
-logfire.instrument_openai()
+logfire.instrument_openai()  # pyright: ignore[reportUnknownMemberType]
 
 
 def main() -> None:

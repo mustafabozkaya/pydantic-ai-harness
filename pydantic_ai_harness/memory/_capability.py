@@ -192,7 +192,7 @@ def exponential_decay(*, half_life_days: float = 30.0, weight: float = 1.0) -> R
         weight: Multiplier applied to the decay value. Default `1.0`.
 
     Returns:
-        A `RecencyScorer` callable. Entries with an unparseable `updated_at`
+        A `RecencyScorer` callable. Entries with an unparsable `updated_at`
         return `0.0`; future-dated entries return the full `weight`.
     """
 
@@ -527,7 +527,7 @@ class Memory(AbstractCapability[AgentDepsT]):
     Example:
         ```python {test="skip" lint="skip"}
         from pydantic_ai import Agent
-        from pydantic_harness.memory import Memory, DictMemoryStore
+        from pydantic_ai_harness.memory import Memory, DictMemoryStore
 
         agent = Agent('openai:gpt-4o', capabilities=[Memory(store=DictMemoryStore())])
         ```
@@ -535,7 +535,7 @@ class Memory(AbstractCapability[AgentDepsT]):
     Multi-agent shared store:
         ```python {test="skip" lint="skip"}
         from pydantic_ai import Agent
-        from pydantic_harness.memory import FileMemoryStore, Memory
+        from pydantic_ai_harness.memory import FileMemoryStore, Memory
 
         shared = FileMemoryStore('/var/lib/myapp/memory.json')
         planner = Agent('openai:gpt-4o', capabilities=[Memory(store=shared, byte_budget=2000)])

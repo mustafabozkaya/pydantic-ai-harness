@@ -12,10 +12,10 @@ from pathlib import Path
 import logfire
 from pydantic_ai import Agent
 
-from pydantic_harness.memory import FileMemoryStore, Memory
+from pydantic_ai_harness.memory import FileMemoryStore, Memory
 
 logfire.configure(send_to_logfire='if-token-present')
-logfire.instrument_openai()
+logfire.instrument_openai()  # pyright: ignore[reportUnknownMemberType]
 
 
 def main() -> None:

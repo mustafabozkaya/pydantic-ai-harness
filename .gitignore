@@ -2,6 +2,8 @@
 .mcp.json
 .DS_Store
 .agents/settings.local.json
+CLAUDE.local.md
+LOCAL_WORKTREES.md
 
 # IDE
 .idea/
@@ -22,3 +24,4 @@ wheels/
 
 # Hypothesis
 .hypothesis/
+.vscode/
