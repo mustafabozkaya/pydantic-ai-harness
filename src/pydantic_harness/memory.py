@@ -467,9 +467,17 @@ class FileMemoryStore(_BaseDictStore):
         return existed
 
 
-def format_entry(entry: MemoryEntry) -> str:
-    """Format a memory entry as a human-readable string."""
-    line = f'[{entry.key}] {entry.content}'
+def format_entry(entry: MemoryEntry, *, prefer_summary: bool = False) -> str:
+    """Format a memory entry as a human-readable string.
+
+    Args:
+        entry: The entry to format.
+        prefer_summary: If True and `entry.summary` is set, render the summary
+            in place of the full content. Used by `Memory.build_instructions`
+            to keep system-prompt injection short. Defaults to False (full content).
+    """
+    body = entry.summary if (prefer_summary and entry.summary is not None) else entry.content
+    line = f'[{entry.key}] {body}'
     extras: list[str] = []
     if entry.tags:
         extras.append(f'tags: {", ".join(entry.tags)}')
@@ -505,7 +513,18 @@ class Memory(AbstractCapability[AgentDepsT]):
     """Whether to inject existing memories into the system prompt at run start."""
 
     max_instructions_memories: int = 20
-    """Maximum number of memories to include in the system prompt."""
+    """Maximum number of non-pinned memories to include in the system prompt.
+
+    `read_only=True` entries always inject regardless of this cap.
+    """
+
+    byte_budget: int | None = None
+    """Optional UTF-8 byte cap on the injected memories block.
+
+    When set, non-pinned entries are skipped once adding the next would exceed
+    the budget. `read_only=True` entries always inject regardless of this cap.
+    Default `None` = no byte cap (only the count cap applies).
+    """
 
     recency_scorer: RecencyScorer | None = field(
         default_factory=lambda: exponential_decay(half_life_days=30.0, weight=0.5),
@@ -552,20 +571,53 @@ class Memory(AbstractCapability[AgentDepsT]):
         )
 
     def build_instructions(self, ctx: RunContext[AgentDepsT]) -> str:
-        """Build dynamic instructions that include currently stored memories."""
+        """Build dynamic instructions that include currently stored memories.
+
+        Selection rules:
+        - `read_only=True` entries always inject (bypass both count cap and byte budget).
+        - Non-pinned entries respect `max_instructions_memories` and `byte_budget`.
+        - When `entry.summary` is set, it's preferred over `entry.content` to save tokens.
+        - Pinned entries are listed first.
+        """
         parts: list[str] = [
             'You have access to a persistent memory system. '
             'Use it to save important information that should be remembered across conversations.',
         ]
-        if self.inject_memories_in_instructions:
-            entries = self.store.list_all()
-            if entries:
-                parts.append('\nCurrently stored memories:')
-                for entry in entries[: self.max_instructions_memories]:
-                    parts.append(f'- {format_entry(entry)}')
-                overflow = len(entries) - self.max_instructions_memories
-                if overflow > 0:
-                    parts.append(f'... and {overflow} more (use list_memories or search_memories to see all).')
+        if not self.inject_memories_in_instructions:
+            return '\n'.join(parts)
+
+        entries = self.store.list_all()
+        if not entries:
+            return '\n'.join(parts)
+
+        parts.append('\nCurrently stored memories:')
+
+        # Pinned first, then the rest in store order
+        ordered = sorted(entries, key=lambda e: not e.read_only)
+
+        formatted: list[str] = []
+        used_bytes = 0
+        consumed_non_pinned = 0
+        for entry in ordered:
+            line = f'- {format_entry(entry, prefer_summary=True)}'
+            line_bytes = len(line.encode('utf-8'))
+            if entry.read_only:
+                formatted.append(line)
+                used_bytes += line_bytes
+                continue
+            if consumed_non_pinned >= self.max_instructions_memories:
+                break
+            if self.byte_budget is not None and used_bytes + line_bytes > self.byte_budget:
+                break
+            formatted.append(line)
+            used_bytes += line_bytes
+            consumed_non_pinned += 1
+
+        parts.extend(formatted)
+
+        overflow = len(entries) - len(formatted)
+        if overflow > 0:
+            parts.append(f'... and {overflow} more (use list_memories or search_memories to see all).')
         return '\n'.join(parts)
 
     def get_instructions(self) -> AgentInstructions[AgentDepsT] | None:

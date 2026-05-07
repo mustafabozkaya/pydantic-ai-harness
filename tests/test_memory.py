@@ -651,6 +651,19 @@ class TestFormatEntry:
         entry = MemoryEntry(key='k', content='hello', namespace=('project',))
         assert format_entry(entry) == '[k] hello (namespace: project)'
 
+    def test_prefer_summary_uses_summary(self) -> None:
+        entry = MemoryEntry(key='k', content='long content body', summary='short')
+        assert format_entry(entry, prefer_summary=True) == '[k] short'
+
+    def test_prefer_summary_falls_back_to_content(self) -> None:
+        entry = MemoryEntry(key='k', content='hello')
+        assert format_entry(entry, prefer_summary=True) == '[k] hello'
+
+    def test_default_prefers_content(self) -> None:
+        entry = MemoryEntry(key='k', content='full content', summary='short')
+        # prefer_summary defaults to False
+        assert format_entry(entry) == '[k] full content'
+
     def test_with_nested_namespace(self) -> None:
         entry = MemoryEntry(key='k', content='hello', namespace=('users', 'alice'))
         assert format_entry(entry) == '[k] hello (namespace: users/alice)'
@@ -999,6 +1012,68 @@ class TestMemoryInstructions:
         assert '... and' not in text
         assert '[k0]' in text
         assert '[k4]' in text
+
+    def test_instructions_use_summary(self) -> None:
+        store = DictMemoryStore()
+        store.put(
+            MemoryEntry(key='user', content='Alice is a 30-year-old data scientist', summary='Alice, data scientist')
+        )
+        cap: Memory[None] = Memory(store=store)
+        text = cap.build_instructions(self._make_ctx())
+        assert '[user] Alice, data scientist' in text
+        assert '30-year-old' not in text
+
+    def test_instructions_falls_back_to_content_without_summary(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='user', content='Alice is a 30-year-old data scientist'))
+        cap: Memory[None] = Memory(store=store)
+        text = cap.build_instructions(self._make_ctx())
+        assert 'Alice is a 30-year-old data scientist' in text
+
+    def test_instructions_byte_budget_truncates(self) -> None:
+        store = DictMemoryStore()
+        for i in range(10):
+            store.put(MemoryEntry(key=f'k{i}', content=f'content for entry {i}'))
+        # Tight budget: only ~2 short lines fit
+        cap: Memory[None] = Memory(store=store, byte_budget=80)
+        text = cap.build_instructions(self._make_ctx())
+        assert '[k0]' in text
+        # k9 (last) almost certainly excluded by byte budget
+        assert '[k9]' not in text
+        assert 'more (use list_memories' in text
+
+    def test_instructions_pinned_always_injected(self) -> None:
+        store = DictMemoryStore()
+        # 5 normal entries + 1 pinned, with max=2: pinned is always shown
+        for i in range(5):
+            store.put(MemoryEntry(key=f'normal{i}', content=f'v{i}'))
+        store.put(MemoryEntry(key='persona', content='I am a helpful assistant', read_only=True))
+        cap: Memory[None] = Memory(store=store, max_instructions_memories=2)
+        text = cap.build_instructions(self._make_ctx())
+        assert '[persona] I am a helpful assistant' in text
+        # Two normal entries + the pinned one = 3 displayed
+        normal_displayed = sum(1 for i in range(5) if f'[normal{i}]' in text)
+        assert normal_displayed == 2
+
+    def test_instructions_pinned_bypasses_byte_budget(self) -> None:
+        store = DictMemoryStore()
+        # Big pinned entry that would overflow a tight budget
+        store.put(MemoryEntry(key='persona', content='x' * 500, read_only=True))
+        store.put(MemoryEntry(key='normal', content='small'))
+        cap: Memory[None] = Memory(store=store, byte_budget=50)
+        text = cap.build_instructions(self._make_ctx())
+        assert '[persona]' in text
+        # Pinned takes the budget; normal gets dropped
+        assert '[normal]' not in text
+
+    def test_instructions_pinned_listed_first(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='zzz_normal', content='v'))
+        store.put(MemoryEntry(key='aaa_pinned', content='p', read_only=True))
+        cap: Memory[None] = Memory(store=store)
+        text = cap.build_instructions(self._make_ctx())
+        # Pinned line appears before normal line
+        assert text.index('[aaa_pinned]') < text.index('[zzz_normal]')
 
 
 # --- MemoryStore protocol ---
