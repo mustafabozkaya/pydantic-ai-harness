@@ -11,7 +11,7 @@ Pydantic AI agent via the `capabilities` parameter.
 | FileSystem | Read, write, and navigate the local filesystem |
 | Guardrails | Validate inputs/outputs and enforce cost and tool constraints |
 | KnowsCurrentTime | Inject the current date and time into the system prompt |
-| Memory | Persistent key-value memory across agent sessions |
+| [Memory](memory.md) | Persistent key-value memory across agent sessions |
 | Planning | Break complex tasks into plans before execution |
 | RepoContextInjection | Inject repository structure and context into the system prompt |
 | SecretMasking | Detect and redact secrets in agent inputs and outputs |

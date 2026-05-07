@@ -504,6 +504,19 @@ class Memory(AbstractCapability[AgentDepsT]):
 
         agent = Agent('openai:gpt-4o', capabilities=[Memory(store=DictMemoryStore())])
         ```
+
+    Multi-agent shared store:
+        ```python {test="skip" lint="skip"}
+        from pydantic_ai import Agent
+        from pydantic_harness.memory import FileMemoryStore, Memory
+
+        shared = FileMemoryStore('/var/lib/myapp/memory.json')
+        planner = Agent('openai:gpt-4o', capabilities=[Memory(store=shared, byte_budget=2000)])
+        worker = Agent('openai:gpt-4o-mini', capabilities=[Memory(store=shared, byte_budget=500)])
+        ```
+        Both agents see the same entries; use distinct `namespace` tuples on
+        saves to keep their workspaces separate (e.g., `('agents', 'planner')`
+        vs `('agents', 'worker')`).
     """
 
     store: MemoryStore = field(default_factory=DictMemoryStore)
