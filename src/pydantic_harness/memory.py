@@ -18,6 +18,7 @@ from typing import Any, Protocol, TypeAlias, TypedDict, runtime_checkable
 
 from pydantic_ai._instructions import AgentInstructions
 from pydantic_ai.capabilities.abstract import AbstractCapability
+from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.tools import AgentDepsT, RunContext, Tool
 from pydantic_ai.toolsets import AgentToolset
 from pydantic_ai.toolsets.function import FunctionToolset
@@ -207,6 +208,32 @@ def exponential_decay(*, half_life_days: float = 30.0, weight: float = 1.0) -> R
         return weight * (2 ** (-age_days / half_life_days))
 
     return scorer
+
+
+def _saves_in_history(messages: list[ModelMessage]) -> dict[str, str]:
+    """Scan tool history for `save_memory` calls; return `{key: last saved content}`.
+
+    Used by `Memory.build_instructions` to suppress re-injecting entries the LLM
+    just saved — when the saved content still matches the current store entry,
+    the LLM has already seen the value via the tool call/result in history,
+    so re-injecting it wastes tokens. If a key was saved multiple times, the
+    most recent save wins.
+    """
+    last: dict[str, str] = {}
+    for msg in messages:
+        if not isinstance(msg, ModelResponse):
+            continue
+        for part in msg.parts:
+            if not isinstance(part, ToolCallPart):
+                continue
+            if part.tool_name != 'save_memory':
+                continue
+            args = part.args_as_dict()
+            key = args.get('key')
+            content = args.get('content')
+            if isinstance(key, str) and isinstance(content, str):
+                last[key] = content
+    return last
 
 
 def _matches_filter(entry: MemoryEntry, filter_: dict[str, object]) -> bool:
@@ -553,6 +580,16 @@ class Memory(AbstractCapability[AgentDepsT]):
     `search_memories`, `list_memories`, `delete_memory`); values replace the docstring used
     by the LLM. Useful for nudging the agent (e.g., "Save aggressively, even small facts")."""
 
+    dedup_recent_saves: bool = True
+    """When True, suppress injection of entries that match a `save_memory` call
+    in the current run's tool history (the LLM has already seen the value).
+
+    The check is content-aware: if the store entry's `content` differs from the
+    most recent saved content (e.g., another process updated the entry), the
+    entry is injected so the LLM sees the current value. `read_only=True`
+    entries are never suppressed.
+    """
+
     @classmethod
     def get_serialization_name(cls) -> str | None:
         """Return the name used for spec serialization."""
@@ -592,9 +629,12 @@ class Memory(AbstractCapability[AgentDepsT]):
         """Build dynamic instructions that include currently stored memories.
 
         Selection rules:
-        - `read_only=True` entries always inject (bypass both count cap and byte budget).
+        - `read_only=True` entries always inject (bypass count cap, byte budget, and dedup).
         - Non-pinned entries respect `max_instructions_memories` and `byte_budget`.
         - When `entry.summary` is set, it's preferred over `entry.content` to save tokens.
+        - When `dedup_recent_saves` is True, entries whose current content matches
+          the most recent `save_memory` call in this run's tool history are suppressed
+          (the LLM has already seen the value via the tool call).
         - Pinned entries are listed first.
         """
         parts: list[str] = [
@@ -610,6 +650,8 @@ class Memory(AbstractCapability[AgentDepsT]):
 
         parts.append('\nCurrently stored memories:')
 
+        recent_saves: dict[str, str] = _saves_in_history(ctx.messages) if self.dedup_recent_saves else {}
+
         # Pinned first, then the rest in store order
         ordered = sorted(entries, key=lambda e: not e.read_only)
 
@@ -617,6 +659,11 @@ class Memory(AbstractCapability[AgentDepsT]):
         used_bytes = 0
         consumed_non_pinned = 0
         for entry in ordered:
+            # read_only entries bypass dedup, count cap, and byte budget
+            if not entry.read_only:
+                saved_content = recent_saves.get(entry.key)
+                if saved_content is not None and saved_content == entry.content:
+                    continue
             line = f'- {format_entry(entry, prefer_summary=True)}'
             line_bytes = len(line.encode('utf-8'))
             if entry.read_only:

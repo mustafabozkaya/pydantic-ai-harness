@@ -60,10 +60,13 @@ Required: `key`, `content`. Optional fields:
 
 ### Instructions injection
 
-- `read_only=True` entries always inject (bypass count cap and byte budget)
+- `read_only=True` entries always inject (bypass count cap, byte budget, and dedup)
 - Non-pinned entries respect `max_instructions_memories` (default 20) and
   `byte_budget: int | None` (UTF-8 byte cap)
 - `entry.summary` is preferred over `entry.content` to save tokens
+- `dedup_recent_saves: bool = True` suppresses entries the LLM just saved in
+  this run's tool history, when the saved content still matches the store
+  entry (content-aware: if external state diverged, inject the current value)
 - Pinned entries are listed first
 - Disabled entirely via `inject_memories_in_instructions=False` (prompt-cache
   mitigation for write-heavy workloads)
@@ -83,6 +86,7 @@ Required: `key`, `content`. Optional fields:
 | `byte_budget` | `None` | Optional UTF-8 byte cap on injection block |
 | `recency_scorer` | `exponential_decay(half_life_days=30, weight=0.5)` | Or `None` to disable |
 | `tool_descriptions` | `{}` | Per-tool description overrides |
+| `dedup_recent_saves` | `True` | Suppress injection of entries just saved in this run |
 
 ## Files
 
@@ -98,9 +102,5 @@ Required: `key`, `content`. Optional fields:
   `EmbeddingStore` reference (numpy/cosine, or pgvector). Deferred until a
   concrete backend drives the API design — premature design tends to lock in
   the wrong shape.
-- **Tool-history dedup hook** — suppress next-turn injection of memories the
-  LLM just saved (already visible in tool history). Has subtle semantics around
-  in-run updates; deferred until usage telemetry shows the magnitude of the
-  token-waste problem.
 - **Deferred capability loading** (PR #5230 in pydantic-ai) — once that lands,
   declare `id`/`description` on `Memory` to opt into deferred loading.

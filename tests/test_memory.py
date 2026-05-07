@@ -1085,6 +1085,72 @@ class TestMemoryInstructions:
         # Pinned line appears before normal line
         assert text.index('[aaa_pinned]') < text.index('[zzz_normal]')
 
+    @staticmethod
+    def _ctx_with_save(key: str, content: str) -> RunContext[None]:
+        from unittest.mock import MagicMock
+
+        from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
+
+        msgs: list[ModelMessage] = [
+            ModelResponse(parts=[ToolCallPart(tool_name='save_memory', args={'key': key, 'content': content})]),
+        ]
+        return RunContext(deps=None, model=MagicMock(), usage=RunUsage(), messages=msgs)
+
+    def test_instructions_dedup_suppresses_recently_saved(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='user_name', content='Alice'))
+        cap: Memory[None] = Memory(store=store)
+        text = cap.build_instructions(self._ctx_with_save('user_name', 'Alice'))
+        # LLM has already seen 'Alice' via the save_memory call in tool history
+        assert '[user_name]' not in text
+
+    def test_instructions_dedup_injects_when_content_diverges(self) -> None:
+        # Saved 'Alice' but store now has 'Alice (UPDATED)' (e.g., another agent updated it)
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='user_name', content='Alice (UPDATED)'))
+        cap: Memory[None] = Memory(store=store)
+        text = cap.build_instructions(self._ctx_with_save('user_name', 'Alice'))
+        # Inject because current content differs from what the LLM saw saved
+        assert '[user_name] Alice (UPDATED)' in text
+
+    def test_instructions_dedup_disabled_via_flag(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='user_name', content='Alice'))
+        cap: Memory[None] = Memory(store=store, dedup_recent_saves=False)
+        text = cap.build_instructions(self._ctx_with_save('user_name', 'Alice'))
+        # Always inject when dedup is off
+        assert '[user_name] Alice' in text
+
+    def test_instructions_dedup_does_not_affect_pinned(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='persona', content='I am helpful', read_only=True))
+        cap: Memory[None] = Memory(store=store)
+        text = cap.build_instructions(self._ctx_with_save('persona', 'I am helpful'))
+        # Pinned entries always inject regardless of dedup
+        assert '[persona] I am helpful' in text
+
+    def test_instructions_dedup_uses_most_recent_save(self) -> None:
+        # Two saves of the same key; only the most recent one's content matters for dedup.
+        from unittest.mock import MagicMock
+
+        from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
+
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='user_pref', content='loves green'))
+        msgs: list[ModelMessage] = [
+            ModelResponse(
+                parts=[ToolCallPart(tool_name='save_memory', args={'key': 'user_pref', 'content': 'loves blue'})]
+            ),
+            ModelResponse(
+                parts=[ToolCallPart(tool_name='save_memory', args={'key': 'user_pref', 'content': 'loves green'})]
+            ),
+        ]
+        ctx: RunContext[None] = RunContext(deps=None, model=MagicMock(), usage=RunUsage(), messages=msgs)
+        cap: Memory[None] = Memory(store=store)
+        text = cap.build_instructions(ctx)
+        # Most recent save matches current content → suppress
+        assert '[user_pref]' not in text
+
 
 # --- MemoryStore protocol ---
 

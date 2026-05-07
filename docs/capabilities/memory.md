@@ -117,6 +117,15 @@ across writes.
 
 For partial mitigation, set `byte_budget` to cap the injected block size.
 
+## Dedup against tool history
+
+Default `dedup_recent_saves=True` suppresses injection of an entry when the
+LLM has already seen its current value via a `save_memory` call in this run's
+tool history. Content-aware: if something updated the entry externally (e.g.,
+another agent), the saved content no longer matches the store, so the entry
+is injected so the LLM sees the current value. `read_only=True` entries are
+never suppressed. Disable with `dedup_recent_saves=False`.
+
 ## Tool description overrides
 
 ```python
@@ -150,6 +159,3 @@ working reference.
 - **Semantic retrieval**: `SemanticMemoryStore` Protocol extension and an
   `EmbeddingStore` reference impl. Deferred until a concrete backend (Qdrant /
   pgvector / LanceDB) drives the API design.
-- **Tool-history dedup**: suppress next-turn injection of memories the LLM
-  just saved (already in tool history). Deferred — has subtle semantics around
-  updates that need real-world telemetry to design correctly.
