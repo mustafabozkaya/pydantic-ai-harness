@@ -43,6 +43,11 @@ class MemoryEntryDict(_MemoryEntryDictRequired, total=False):
     expires_at: str | None
     created_at: str
     updated_at: str
+    summary: str | None
+    metadata: dict[str, object]
+    read_only: bool
+    char_limit: int | None
+    importance: float | None
 
 
 @dataclass
@@ -70,6 +75,28 @@ class MemoryEntry:
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     """ISO 8601 timestamp of the last update."""
 
+    summary: str | None = None
+    """Optional short summary used by `Memory.build_instructions` when injecting this entry into the system prompt; falls back to `content` when None."""
+
+    metadata: dict[str, object] = field(default_factory=lambda: dict[str, object]())
+    """Structured attributes for filterable search (`MemoryStore.search(filter=...)`). Values must be JSON-serializable."""
+
+    read_only: bool = False
+    """If True, the agent's `save_memory` and `delete_memory` tools refuse to modify this entry. Programmatic access via the store is unrestricted."""
+
+    char_limit: int | None = None
+    """Optional hard cap on `content` length (chars). Enforced at `MemoryEntry` construction; raises `ValueError` if exceeded."""
+
+    importance: float | None = None
+    """Optional relevance booster used by `MemoryStore.search` scoring when set."""
+
+    def __post_init__(self) -> None:
+        """Validate `char_limit` immediately so dev errors surface at construction."""
+        if self.char_limit is not None and len(self.content) > self.char_limit:
+            raise ValueError(
+                f'MemoryEntry {self.key!r} content is {len(self.content)} chars, exceeds char_limit={self.char_limit}',
+            )
+
     def is_expired(self) -> bool:
         """Return True if this entry has passed its expiration time.
 
@@ -93,6 +120,11 @@ class MemoryEntry:
             'expires_at': self.expires_at,
             'created_at': self.created_at,
             'updated_at': self.updated_at,
+            'summary': self.summary,
+            'metadata': self.metadata,
+            'read_only': self.read_only,
+            'char_limit': self.char_limit,
+            'importance': self.importance,
         }
 
     @classmethod
@@ -106,6 +138,11 @@ class MemoryEntry:
             expires_at=data.get('expires_at'),
             created_at=data.get('created_at', ''),
             updated_at=data.get('updated_at', ''),
+            summary=data.get('summary'),
+            metadata=data.get('metadata', {}),
+            read_only=data.get('read_only', False),
+            char_limit=data.get('char_limit'),
+            importance=data.get('importance'),
         )
 
 
@@ -401,6 +438,8 @@ class Memory(AbstractCapability[AgentDepsT]):
             tags: list[str] | None = None,
             scope: str = 'global',
             ttl_minutes: int | None = None,
+            summary: str | None = None,
+            importance: float | None = None,
         ) -> str:
             """Save or update a memory entry.
 
@@ -410,10 +449,15 @@ class Memory(AbstractCapability[AgentDepsT]):
                 tags: Optional tags for categorization and search.
                 scope: Namespace scope (default `'global'`).
                 ttl_minutes: Optional time-to-live in minutes. The entry will expire after this duration.
+                summary: Optional short summary; preferred over `content` when injecting into the system prompt.
+                importance: Optional relevance booster (e.g., 0.0–1.0); used by search scoring.
             """
             now = datetime.now(timezone.utc)
             now_iso = now.isoformat()
             existing = store.get(key)
+
+            if existing is not None and existing.read_only:
+                return f'Memory {key!r} is read-only and cannot be modified.'
 
             # Dedup warning: check for similar keys among existing entries
             for existing_entry in store.list_all():
@@ -436,6 +480,8 @@ class Memory(AbstractCapability[AgentDepsT]):
                 expires_at=expires_at,
                 created_at=existing.created_at if existing else now_iso,
                 updated_at=now_iso,
+                summary=summary,
+                importance=importance,
             )
             store.put(entry)
             return f'Memory saved: {key}'
@@ -480,6 +526,9 @@ class Memory(AbstractCapability[AgentDepsT]):
             Args:
                 key: The key of the memory to delete.
             """
+            entry = store.get(key)
+            if entry is not None and entry.read_only:
+                return f'Memory {key!r} is read-only and cannot be deleted.'
             if store.delete(key):
                 return f'Memory deleted: {key}'
             return f'No memory found for key: {key}'

@@ -70,6 +70,36 @@ class TestMemoryEntry:
         entry = MemoryEntry(key='k', content='v', expires_at=past)
         assert entry.is_expired()
 
+    def test_default_new_fields(self) -> None:
+        entry = MemoryEntry(key='k', content='v')
+        assert entry.summary is None
+        assert entry.metadata == {}
+        assert entry.read_only is False
+        assert entry.char_limit is None
+        assert entry.importance is None
+
+    def test_round_trip_with_new_fields(self) -> None:
+        entry = MemoryEntry(
+            key='k',
+            content='v',
+            summary='short',
+            metadata={'priority': 1, 'source': 'manual'},
+            read_only=True,
+            char_limit=100,
+            importance=0.8,
+        )
+        assert MemoryEntry.from_dict(entry.to_dict()) == entry
+
+    def test_char_limit_enforced(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match='exceeds char_limit'):
+            MemoryEntry(key='k', content='hello world', char_limit=5)
+
+    def test_char_limit_allows_exact(self) -> None:
+        # Exactly at the limit is allowed
+        MemoryEntry(key='k', content='hello', char_limit=5)
+
 
 # --- _score_entry ---
 
@@ -388,6 +418,11 @@ class TestFileMemoryStore:
                 'expires_at': None,
                 'created_at': 'c',
                 'updated_at': 'u',
+                'summary': None,
+                'metadata': {},
+                'read_only': False,
+                'char_limit': None,
+                'importance': None,
             }
         }
 
@@ -723,6 +758,34 @@ class TestMemoryTools:
         assert store.get('k') is None
         # recall_memory should likewise report no memory
         assert 'No memory found' in tools['recall_memory']('k')
+
+    def test_save_with_summary_and_importance(self) -> None:
+        store = DictMemoryStore()
+        tools = self._get_tools(store)
+        tools['save_memory']('k', 'long content here', None, 'global', None, 'short', 0.9)
+        entry = store.get('k')
+        assert entry is not None
+        assert entry.summary == 'short'
+        assert entry.importance == 0.9
+
+    def test_save_refuses_read_only(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='persona', content='locked', read_only=True))
+        tools = self._get_tools(store)
+        result = tools['save_memory']('persona', 'overwrite attempt')
+        assert 'read-only' in result.lower()
+        # Original content preserved
+        entry = store.get('persona')
+        assert entry is not None
+        assert entry.content == 'locked'
+
+    def test_delete_refuses_read_only(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='persona', content='locked', read_only=True))
+        tools = self._get_tools(store)
+        result = tools['delete_memory']('persona')
+        assert 'read-only' in result.lower()
+        assert store.get('persona') is not None
 
 
 # --- Dedup warning ---
