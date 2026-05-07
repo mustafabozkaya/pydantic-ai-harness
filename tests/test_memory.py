@@ -221,6 +221,12 @@ class TestInMemoryStore:
         assert len(entries) == 1
         assert entries[0].key == 'alive'
 
+    def test_get_filters_expired(self) -> None:
+        store = InMemoryStore()
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        store.put(MemoryEntry(key='dead', content='stale', expires_at=past))
+        assert store.get('dead') is None
+
     def test_list_all_scope_filter(self) -> None:
         store = InMemoryStore()
         store.put(MemoryEntry(key='a', content='x', scope='project'))
@@ -458,6 +464,27 @@ class TestFileStore:
         assert entry is not None
         assert entry.expires_at == future
 
+    def test_save_drops_expired(self, tmp_path: Path) -> None:
+        path = tmp_path / 'mem.json'
+        store = FileStore(path)
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        store.put(MemoryEntry(key='dead', content='stale', expires_at=past))
+        store.put(MemoryEntry(key='alive', content='fresh'))
+
+        raw = json.loads(path.read_text(encoding='utf-8'))
+        assert 'dead' not in raw
+        assert 'alive' in raw
+
+    def test_get_filters_expired(self, tmp_path: Path) -> None:
+        path = tmp_path / 'mem.json'
+        store = FileStore(path)
+        future = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+        store.put(MemoryEntry(key='soon', content='v', expires_at=future))
+        # Manually backdate by mutating the in-memory entry's expires_at
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        store._entries['soon'].expires_at = past
+        assert store.get('soon') is None
+
 
 # --- format_entry ---
 
@@ -692,11 +719,10 @@ class TestMemoryTools:
         store = InMemoryStore()
         tools = self._get_tools(store)
         tools['save_memory']('k', 'v', None, 'global', 0)
-        entry = store.get('k')
-        assert entry is not None
-        assert entry.expires_at is not None
-        # TTL=0 means it expires immediately
-        assert entry.is_expired()
+        # TTL=0 expires immediately; get() filters it out
+        assert store.get('k') is None
+        # recall_memory should likewise report no memory
+        assert 'No memory found' in tools['recall_memory']('k')
 
 
 # --- Dedup warning ---

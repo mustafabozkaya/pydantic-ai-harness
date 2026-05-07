@@ -71,7 +71,14 @@ class MemoryEntry:
     """ISO 8601 timestamp of the last update."""
 
     def is_expired(self) -> bool:
-        """Return True if this entry has passed its expiration time."""
+        """Return True if this entry has passed its expiration time.
+
+        Wall-clock semantics: an entry created with `ttl_minutes=N` expires `N`
+        minutes after creation in real time, regardless of how many agent turns
+        or sessions have elapsed. TTL is opt-in (default `expires_at=None` =
+        no expiry) and intended for facts with a real-world lifetime
+        (verification codes, session credentials, etc.).
+        """
         if self.expires_at is None:
             return False
         return datetime.fromisoformat(self.expires_at) <= datetime.now(timezone.utc)
@@ -184,8 +191,11 @@ class _BaseDictStore:
     _entries: dict[str, MemoryEntry]
 
     def get(self, key: str) -> MemoryEntry | None:
-        """Retrieve a memory entry by key."""
-        return self._entries.get(key)
+        """Retrieve a non-expired memory entry by key."""
+        entry = self._entries.get(key)
+        if entry is None or entry.is_expired():
+            return None
+        return entry
 
     def put(self, entry: MemoryEntry) -> None:
         """Store or update a memory entry."""
@@ -194,6 +204,12 @@ class _BaseDictStore:
     def delete(self, key: str) -> bool:
         """Delete a memory entry by key."""
         return self._entries.pop(key, None) is not None
+
+    def _gc_expired(self) -> None:
+        """Drop expired entries from the backing dict."""
+        expired_keys = [key for key, entry in self._entries.items() if entry.is_expired()]
+        for key in expired_keys:
+            del self._entries[key]
 
     def list_all(self, *, scope: str | None = None) -> list[MemoryEntry]:
         """Return all non-expired entries, optionally filtered by scope."""
@@ -258,6 +274,7 @@ class FileStore(_BaseDictStore):
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._gc_expired()
         data = {key: entry.to_dict() for key, entry in self._entries.items()}
         self._path.write_text(json.dumps(data, indent=2), encoding='utf-8')
 
@@ -431,8 +448,6 @@ class Memory(AbstractCapability[AgentDepsT]):
             """
             entry = store.get(key)
             if entry is None:
-                return f'No memory found for key: {key}'
-            if entry.is_expired():
                 return f'No memory found for key: {key}'
             return format_entry(entry)
 
