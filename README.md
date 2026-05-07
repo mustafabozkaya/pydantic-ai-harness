@@ -59,9 +59,10 @@ agent = Agent(
 
 result = agent.run_sync(
     "Fetch the top, best, and 'show HN' Hacker News feeds in parallel. "
-    "Filter to stories with >100 points and >50 comments posted in the last 6 hours. "
-    "For the most-discussed one, search the web for follow-up coverage and "
-    "return a one-paragraph synthesis."
+    "Dedupe stories across feeds into a dict keyed by id, then keep only those with >100 points. "
+    "Pick the survivor with the most comments. In parallel, fetch its comment thread, "
+    "its submitter's profile, and a web search for follow-up coverage. "
+    "Return a one-paragraph synthesis."
 )
 print(result.output)
 ```
