@@ -20,6 +20,7 @@ from pydantic_harness.memory import (
     MemoryStore,
     _score_entry,
     _simple_similarity,
+    exponential_decay,
     format_entry,
 )
 
@@ -376,6 +377,72 @@ class TestDictMemoryStore:
         # Prefix ('users',) matches both alice and bob
         results = store.list_all(namespace=('users',))
         assert {e.key for e in results} == {'a', 'b'}
+
+    def test_list_all_with_filter(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='a', content='x', metadata={'priority': 1}))
+        store.put(MemoryEntry(key='b', content='y', metadata={'priority': 2}))
+        results = store.list_all(filter={'priority': 1})
+        assert len(results) == 1
+        assert results[0].key == 'a'
+
+    def test_search_with_filter(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='a', content='hello world', metadata={'source': 'manual'}))
+        store.put(MemoryEntry(key='b', content='hello world', metadata={'source': 'auto'}))
+        results = store.search('hello', filter={'source': 'manual'})
+        assert len(results) == 1
+        assert results[0].key == 'a'
+
+    def test_search_filter_no_match(self) -> None:
+        store = DictMemoryStore()
+        store.put(MemoryEntry(key='a', content='hello world', metadata={'source': 'manual'}))
+        assert store.search('hello', filter={'source': 'nonexistent'}) == []
+
+    def test_search_importance_boosts(self) -> None:
+        store = DictMemoryStore()
+        # Both match 'hello' once in content; importance differentiates them
+        store.put(MemoryEntry(key='boring', content='hello there'))
+        store.put(MemoryEntry(key='vip', content='hello there', importance=2.0))
+        results = store.search('hello')
+        assert results[0].key == 'vip'
+        assert results[1].key == 'boring'
+
+    def test_search_with_recency_scorer(self) -> None:
+        store = DictMemoryStore()
+        # Identical keyword scores; recent entry should rank first via recency_scorer.
+        old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+        new = datetime.now(timezone.utc).isoformat()
+        store.put(MemoryEntry(key='ancient', content='hello there', updated_at=old))
+        store.put(MemoryEntry(key='fresh', content='hello there', updated_at=new))
+        results = store.search('hello', recency_scorer=exponential_decay(half_life_days=30.0))
+        assert results[0].key == 'fresh'
+        assert results[1].key == 'ancient'
+
+
+class TestExponentialDecay:
+    def test_fresh_entry_full_weight(self) -> None:
+        scorer = exponential_decay(half_life_days=30.0, weight=1.0)
+        entry = MemoryEntry(key='k', content='v')  # updated_at = now
+        # Should be very close to 1.0 (essentially zero seconds elapsed)
+        assert 0.99 < scorer(entry) <= 1.0
+
+    def test_one_half_life_old(self) -> None:
+        scorer = exponential_decay(half_life_days=30.0, weight=1.0)
+        thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        entry = MemoryEntry(key='k', content='v', updated_at=thirty_days_ago)
+        # ~0.5 (within float-precision tolerance)
+        assert 0.49 < scorer(entry) < 0.51
+
+    def test_invalid_updated_at_returns_zero(self) -> None:
+        scorer = exponential_decay()
+        entry = MemoryEntry(key='k', content='v', updated_at='')
+        assert scorer(entry) == 0.0
+
+    def test_weight_multiplier(self) -> None:
+        scorer = exponential_decay(half_life_days=30.0, weight=0.5)
+        entry = MemoryEntry(key='k', content='v')  # fresh
+        assert 0.49 < scorer(entry) <= 0.5
 
 
 # --- FileMemoryStore ---

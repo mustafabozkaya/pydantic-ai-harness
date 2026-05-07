@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Protocol, TypedDict, runtime_checkable
+from typing import Any, Protocol, TypeAlias, TypedDict, runtime_checkable
 
 from pydantic_ai._instructions import AgentInstructions
 from pydantic_ai.capabilities.abstract import AbstractCapability
@@ -174,6 +175,48 @@ def _score_entry(entry: MemoryEntry, words: list[str]) -> int:
     return score
 
 
+RecencyScorer: TypeAlias = Callable[['MemoryEntry'], float]
+"""Callable that maps a `MemoryEntry` to a recency score (typically in `[0, 1]`).
+
+Added to the keyword-match score in `MemoryStore.search` to bias results toward fresher entries.
+Use the built-in `exponential_decay` factory or supply any callable.
+"""
+
+
+def exponential_decay(*, half_life_days: float = 30.0, weight: float = 1.0) -> RecencyScorer:
+    """Build a recency scorer with exponential decay over `entry.updated_at`.
+
+    Args:
+        half_life_days: Age (in days) at which the decay value is halved. Default `30.0`.
+        weight: Multiplier applied to the decay value. Default `1.0`.
+
+    Returns:
+        A `RecencyScorer` callable. Entries with an unparseable `updated_at`
+        return `0.0`; future-dated entries return the full `weight`.
+    """
+
+    def scorer(entry: MemoryEntry) -> float:
+        try:
+            updated = datetime.fromisoformat(entry.updated_at)
+        except ValueError:
+            return 0.0
+        age_seconds = (datetime.now(timezone.utc) - updated).total_seconds()
+        if age_seconds < 0:
+            return weight
+        age_days = age_seconds / 86400
+        return weight * (2 ** (-age_days / half_life_days))
+
+    return scorer
+
+
+def _matches_filter(entry: MemoryEntry, filter_: dict[str, object]) -> bool:
+    """Return True if all filter keys match `entry.metadata` values exactly."""
+    for key, value in filter_.items():
+        if entry.metadata.get(key) != value:
+            return False
+    return True
+
+
 def _namespace_matches(entry_ns: tuple[str, ...], filter_prefix: tuple[str, ...]) -> bool:
     """Return True if `entry_ns` starts with `filter_prefix`.
 
@@ -230,17 +273,28 @@ class MemoryStore(Protocol):
         """Delete a memory entry by key. Returns True if it existed."""
         ...
 
-    def list_all(self, *, namespace: tuple[str, ...] | None = None) -> list[MemoryEntry]:  # pragma: no cover
-        """Return all non-expired entries, optionally filtered by namespace prefix."""
+    def list_all(  # pragma: no cover
+        self,
+        *,
+        namespace: tuple[str, ...] | None = None,
+        filter: dict[str, object] | None = None,
+    ) -> list[MemoryEntry]:
+        """Return all non-expired entries, optionally filtered by namespace prefix and metadata equality."""
         ...
 
-    def search(
+    def search(  # pragma: no cover
         self,
         query: str,
         *,
         namespace: tuple[str, ...] | None = None,
-    ) -> list[MemoryEntry]:  # pragma: no cover
-        """Search non-expired entries with word-boundary matching, sorted by relevance."""
+        filter: dict[str, object] | None = None,
+        recency_scorer: RecencyScorer | None = None,
+    ) -> list[MemoryEntry]:
+        """Search non-expired entries, sorted by relevance.
+
+        Score = keyword-match count + entry.importance (if set) + recency_scorer(entry) (if provided).
+        Entries with zero keyword match are excluded regardless of recency or importance.
+        """
         ...
 
     def list_namespaces(  # pragma: no cover
@@ -286,12 +340,19 @@ class _BaseDictStore:
         for key in expired_keys:
             del self._entries[key]
 
-    def list_all(self, *, namespace: tuple[str, ...] | None = None) -> list[MemoryEntry]:
-        """Return all non-expired entries, optionally filtered by namespace prefix."""
+    def list_all(
+        self,
+        *,
+        namespace: tuple[str, ...] | None = None,
+        filter: dict[str, object] | None = None,
+    ) -> list[MemoryEntry]:
+        """Return all non-expired entries, optionally filtered by namespace prefix and metadata equality."""
         return [
             entry
             for entry in self._entries.values()
-            if not entry.is_expired() and (namespace is None or _namespace_matches(entry.namespace, namespace))
+            if not entry.is_expired()
+            and (namespace is None or _namespace_matches(entry.namespace, namespace))
+            and (filter is None or _matches_filter(entry, filter))
         ]
 
     def search(
@@ -299,20 +360,33 @@ class _BaseDictStore:
         query: str,
         *,
         namespace: tuple[str, ...] | None = None,
+        filter: dict[str, object] | None = None,
+        recency_scorer: RecencyScorer | None = None,
     ) -> list[MemoryEntry]:
-        """Search non-expired entries with word-boundary matching, sorted by relevance."""
+        """Search non-expired entries with word-boundary matching, sorted by relevance.
+
+        Score = keyword-match count + `entry.importance` (if set) + `recency_scorer(entry)` (if provided).
+        """
         words = query.lower().split()
         if not words:
             return []
-        scored: list[tuple[int, MemoryEntry]] = []
+        scored: list[tuple[float, MemoryEntry]] = []
         for entry in self._entries.values():
             if entry.is_expired():
                 continue
             if namespace is not None and not _namespace_matches(entry.namespace, namespace):
                 continue
-            score = _score_entry(entry, words)
-            if score > 0:
-                scored.append((score, entry))
+            if filter is not None and not _matches_filter(entry, filter):
+                continue
+            base = _score_entry(entry, words)
+            if base == 0:
+                continue
+            score: float = float(base)
+            if entry.importance is not None:
+                score += entry.importance
+            if recency_scorer is not None:
+                score += recency_scorer(entry)
+            scored.append((score, entry))
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return [entry for _, entry in scored]
 
@@ -433,6 +507,15 @@ class Memory(AbstractCapability[AgentDepsT]):
     max_instructions_memories: int = 20
     """Maximum number of memories to include in the system prompt."""
 
+    recency_scorer: RecencyScorer | None = field(
+        default_factory=lambda: exponential_decay(half_life_days=30.0, weight=0.5),
+    )
+    """Recency scorer threaded into `search_memories` to bias results toward fresher entries.
+
+    Defaults to `exponential_decay(half_life_days=30, weight=0.5)`. Set to `None` to disable.
+    Pass any `Callable[[MemoryEntry], float]` for custom decay shapes.
+    """
+
     @classmethod
     def get_serialization_name(cls) -> str | None:
         """Return the name used for spec serialization."""
@@ -496,6 +579,7 @@ class Memory(AbstractCapability[AgentDepsT]):
         requiring anything from the agent's `deps`.
         """
         store = self.store
+        recency_scorer = self.recency_scorer
 
         def save_memory(
             key: str,
@@ -572,7 +656,7 @@ class Memory(AbstractCapability[AgentDepsT]):
                 namespace: Optional namespace prefix to restrict the search to (e.g., `['users']`).
             """
             ns: tuple[str, ...] | None = tuple(namespace) if namespace else None
-            results = store.search(query, namespace=ns)
+            results = store.search(query, namespace=ns, recency_scorer=recency_scorer)
             if not results:
                 return f'No memories found matching: {query}'
             return '\n'.join(format_entry(entry) for entry in results)

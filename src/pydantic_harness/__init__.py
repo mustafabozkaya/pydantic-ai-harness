@@ -7,7 +7,16 @@ Usage:
 # Each capability module is imported and re-exported here.
 # Capabilities are listed alphabetically.
 
-from pydantic_harness.memory import DictMemoryStore, FileMemoryStore, Memory, MemoryEntry, MemoryEntryDict, MemoryStore
+from pydantic_harness.memory import (
+    DictMemoryStore,
+    FileMemoryStore,
+    Memory,
+    MemoryEntry,
+    MemoryEntryDict,
+    MemoryStore,
+    RecencyScorer,
+    exponential_decay,
+)
 
 __all__: list[str] = [
     'DictMemoryStore',
@@ -16,4 +25,6 @@ __all__: list[str] = [
     'MemoryEntry',
     'MemoryEntryDict',
     'MemoryStore',
+    'RecencyScorer',
+    'exponential_decay',
 ]
