@@ -36,7 +36,7 @@ Requires Python 3.10+ and `pydantic-ai-slim>=1.80.0`.
 ## Quick start
 
 ```bash
-uv add "pydantic-ai-slim[anthropic,mcp,logfire]" "pydantic-ai-harness[code-mode]"
+uv add "pydantic-ai-slim[anthropic,mcp,duckduckgo,logfire]" "pydantic-ai-harness[code-mode]"
 ```
 
 ```python
