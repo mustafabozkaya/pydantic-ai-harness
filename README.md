@@ -106,32 +106,40 @@ agent = Agent(
         # --- Tools & execution ---
         CodeMode(),
         MCP('https://hn.caseyjhand.com/mcp', builtin=False),
-        ConsoleCapability(),                              # filesystem + shell -- by @vstorm-co (https://github.com/vstorm-co/pydantic-ai-backend)
+        # Filesystem + shell, by @vstorm-co: https://github.com/vstorm-co/pydantic-ai-backend
+        ConsoleCapability(),
         WebSearch(),
 
         # --- Context management ---
-        ContextManagerCapability(max_tokens=180_000),     # sliding window + LLM compaction -- by @vstorm-co (https://github.com/vstorm-co/summarization-pydantic-ai)
+        # Sliding window + LLM compaction, by @vstorm-co: https://github.com/vstorm-co/summarization-pydantic-ai
+        ContextManagerCapability(max_tokens=180_000),
 
         # --- Memory & persistence ---
-        MemoryCapability(agent_name='demo'),              # writes ./MEMORY.md -- by @vstorm-co (https://github.com/vstorm-co/pydantic-deepagents)
+        # Writes ./MEMORY.md, by @vstorm-co: https://github.com/vstorm-co/pydantic-deepagents
+        MemoryCapability(agent_name='demo'),
 
         # --- Orchestration ---
-        SkillsCapability(directories=['./skills']),       # Anthropic Agent Skills spec -- by @DougTrajano (https://github.com/DougTrajano/pydantic-ai-skills)
-        SubAgentCapability(subagents=[                    # by @vstorm-co (https://github.com/vstorm-co/subagents-pydantic-ai)
+        # Anthropic Agent Skills spec, by @DougTrajano: https://github.com/DougTrajano/pydantic-ai-skills
+        SkillsCapability(directories=['./skills']),
+        # By @vstorm-co: https://github.com/vstorm-co/subagents-pydantic-ai
+        SubAgentCapability(subagents=[
             SubAgentConfig(
                 name='researcher',
                 description='Deep research on a topic',
                 instructions='You are a thorough research assistant.',
             ),
         ]),
-        TodoCapability(enable_subtasks=True),             # in-memory; AsyncPostgresStorage available for persistence -- by @vstorm-co (https://github.com/vstorm-co/pydantic-ai-todo)
+        # In-memory; AsyncPostgresStorage available for persistence. By @vstorm-co: https://github.com/vstorm-co/pydantic-ai-todo
+        TodoCapability(enable_subtasks=True),
 
         # --- Safety & reliability ---
-        CostTracking(budget_usd=5.0),                     # the next four are by @vstorm-co (https://github.com/vstorm-co/pydantic-ai-shields)
+        # The next four are by @vstorm-co: https://github.com/vstorm-co/pydantic-ai-shields
+        CostTracking(budget_usd=5.0),
         InputGuard(guard=lambda p: 'ignore previous instructions' not in p.lower()),
         ToolGuard(blocked=['rm'], require_approval=['write_file']),
         SecretRedaction(),
-        StuckLoopDetection(),                             # by @vstorm-co (https://github.com/vstorm-co/pydantic-deepagents)
+        # By @vstorm-co: https://github.com/vstorm-co/pydantic-deepagents
+        StuckLoopDetection(),
     ],
 )
 ```
