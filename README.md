@@ -52,6 +52,11 @@ logfire.instrument_pydantic_ai()
 agent = Agent(
     'anthropic:claude-opus-4-7',
     capabilities=[
+        # Wraps every tool into a single run_code tool, sandboxed by Monty
+        # (https://github.com/pydantic/monty -- pulled in by the [code-mode] extra).
+        # The model writes Python that calls multiple tools with loops, conditionals,
+        # asyncio.gather, and local filtering -- one model round-trip for N tool calls.
+        CodeMode(),
         # Connect to any MCP server -- here, the open-source Hacker News server
         # (https://github.com/cyanheads/hn-mcp-server). builtin=False forces the
         # local FastMCP toolset so CodeMode can wrap the tools; without it,
@@ -62,11 +67,6 @@ agent = Agent(
         # DuckDuckGo fallback (the [duckduckgo] extra above) so CodeMode can batch
         # web searches alongside the HN calls in a single run_code.
         WebSearch(builtin=False),
-        # Wraps every tool into a single run_code tool, sandboxed by Monty
-        # (https://github.com/pydantic/monty -- pulled in by the [code-mode] extra).
-        # The model writes Python that calls multiple tools with loops, conditionals,
-        # asyncio.gather, and local filtering -- one model round-trip for N tool calls.
-        CodeMode(),
     ],
 )
 

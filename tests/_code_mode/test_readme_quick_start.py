@@ -30,7 +30,7 @@ from typing import Any
 
 import pytest
 from pydantic_ai import Agent, Tool
-from pydantic_ai.capabilities import WebSearch
+from pydantic_ai.capabilities import MCP, WebSearch
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -152,13 +152,12 @@ _USER_PROFILE: dict[str, Any] = {
     'submissions': [],
 }
 
-_SEARCH_HITS = {
-    'hits': [
+_WEB_RESULTS: dict[str, list[dict[str, Any]]] = {
+    'results': [
         {
             'title': 'GLM-5: From Vibe Coding to Agentic Engineering',
             'url': 'https://simonwillison.net/2026/Feb/11/glm-5/',
-            'points': 312,
-            'createdAt': '2026-02-11',
+            'snippet': 'Earlier piece by the same author tracing the same arc.',
         },
     ],
 }
@@ -212,16 +211,10 @@ def _make_fake_tools(recorder: _CallRecorder) -> list[Tool[None]]:
         )
         return _USER_PROFILE
 
-    def hn_search_content(*, query: str, sort: str = 'relevance', count: int = 10) -> dict[str, Any]:
-        """Search HN's Algolia index."""
-        recorder.record('hn_search_content', query=query, sort=sort, count=count)
-        return _SEARCH_HITS
-
     return [
         Tool(hn_get_stories),
         Tool(hn_get_thread),
         Tool(hn_get_user),
-        Tool(hn_search_content),
     ]
 
 
@@ -229,7 +222,7 @@ def _make_fake_web_search(recorder: _CallRecorder) -> Any:
     def web_search(*, query: str) -> dict[str, Any]:
         """Stand-in for the WebSearch capability's local DDG fallback."""
         recorder.record('web_search', query=query)
-        return {'results': []}
+        return _WEB_RESULTS
 
     return web_search
 
@@ -262,16 +255,18 @@ _FIRST_RUN_CODE = textwrap.dedent(
     """
 ).strip()
 
-# Second run_code: parallel follow-up calls on the winner.
+# Second run_code: parallel follow-up calls on the winner. Uses the WebSearch
+# capability's local fallback (`web_search`) and the MCP-served HN tools side by
+# side, mirroring the README example's "HN tools + web search" composition.
 _SECOND_RUN_CODE = textwrap.dedent(
     f"""
     import asyncio
     thread, user, coverage = await asyncio.gather(
         hn_get_thread(itemId={_WINNER_ID}, depth=2, maxComments=60),
         hn_get_user(username='{_WINNER_USER}', includeSubmissions=True, submissionCount=5),
-        hn_search_content(query='vibe coding agentic engineering simonwillison', sort='relevance', count=10),
+        web_search(query='vibe coding agentic engineering simonwillison'),
     )
-    (thread['item'], user['user'], coverage['hits'][:5])
+    (thread['item'], user['user'], coverage['results'][:5])
     """
 ).strip()
 
@@ -316,8 +311,18 @@ class TestReadmeQuickStart:
 
         agent: Agent[None, str] = Agent(
             FunctionModel(_model_fn),
-            toolsets=[hn_toolset],
             capabilities=[
+                # Wire the fake HN tools through the `MCP` capability the same way
+                # the README does -- `local=` overrides the default FastMCP HTTP
+                # toolset with our in-process fake, so the test exercises the same
+                # capability composition path as production without any network.
+                # MCP's `__init__` narrows `local` to MCP-specific types, but the
+                # parent `BuiltinOrLocalTool` accepts any `AbstractToolset` at runtime.
+                MCP[None](
+                    'https://hn.caseyjhand.com/mcp',
+                    builtin=False,
+                    local=hn_toolset,  # pyright: ignore[reportArgumentType]
+                ),
                 WebSearch[None](builtin=False, local=_make_fake_web_search(recorder)),
                 CodeMode[None](),
             ],
@@ -342,12 +347,9 @@ class TestReadmeQuickStart:
         assert recorder.calls['hn_get_user'] == [
             {'username': _WINNER_USER, 'includeSubmissions': True, 'submissionCount': 5},
         ]
-        assert len(recorder.calls['hn_search_content']) == 1
-
-        # `WebSearch(builtin=False, local=...)` is wired into the toolset CodeMode
-        # sandboxes -- the model didn't call it on this trace, but registering it
-        # has to not break the agent loop.
-        assert 'web_search' not in recorder.calls
+        assert recorder.calls['web_search'] == [
+            {'query': 'vibe coding agentic engineering simonwillison'},
+        ]
 
         # The final synthesis names the right story, so the second run_code's data
         # actually flowed back through the model loop.
