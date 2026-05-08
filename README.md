@@ -161,11 +161,11 @@ logfire.instrument_pydantic_ai()
 
 agent = Agent(
     'anthropic:claude-opus-4-7',
-    name='brian',
+    name='shrubbery',
     capabilities=[
         # --- Reasoning ---
         # Provider-adaptive thinking; uses native extended thinking on supporting models.
-        Thinking(effort='high'),
+        Thinking(effort='xhigh'),
 
         # --- Tools ---
         # Connect to any MCP server -- here, the open-source Hacker News server
@@ -191,7 +191,7 @@ agent = Agent(
         # --- Memory & persistence ---
         # Persistent ./MEMORY.md per agent name. By @vstorm-co:
         # https://github.com/vstorm-co/pydantic-deepagents
-        MemoryCapability(agent_name='brian'),
+        MemoryCapability(agent_name='shrubbery'),
 
         # --- Orchestration ---
         # Agent skills (Anthropic's spec) by @DougTrajano:
