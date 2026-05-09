@@ -1,7 +1,3 @@
-# pyright: reportArgumentType=false
-# `dirty_equals` matchers (`IsStr`, `IsDatetime`, `IsPartialDict`) are passed
-# where pydantic-ai expects concrete `str` / `datetime` / `dict` -- the runtime
-# `__eq__` matches against the actual value, but pyright can't see that.
 """Regression test for the harness README's Quick start example.
 
 The README ships a Hacker News + web-search agent wrapped in `CodeMode` and
@@ -33,7 +29,6 @@ import textwrap
 from typing import Any
 
 import pytest
-from dirty_equals import IsDatetime, IsPartialDict, IsStr
 from inline_snapshot import snapshot
 from pydantic_ai import Agent, Tool
 from pydantic_ai.capabilities import MCP, WebSearch
@@ -51,6 +46,8 @@ from pydantic_ai.toolsets.function import FunctionToolset
 from pydantic_ai.usage import RequestUsage
 
 from pydantic_ai_harness import CodeMode
+
+from .conftest import IsDatetime, IsPartialDict, IsStr
 
 pytestmark = pytest.mark.anyio
 
