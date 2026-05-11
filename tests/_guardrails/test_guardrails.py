@@ -14,7 +14,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import RunContext, ToolDefinition
 from pydantic_ai.usage import RunUsage
 
-from pydantic_harness.guardrails import (
+from pydantic_ai_harness.guardrails import (
     AsyncGuardrail,
     BudgetExceededError,
     CostGuard,
@@ -524,7 +524,7 @@ class TestInputGuardrailWarn:
             TestModel(),
             capabilities=[InputGuardrail(guard=lambda text: False, on_fail='warn')],
         )
-        with caplog.at_level(logging.WARNING, logger='pydantic_harness.guardrails'):
+        with caplog.at_level(logging.WARNING, logger='pydantic_ai_harness.guardrails'):
             result = await agent.run('Hello')
         assert result.output is not None
         assert 'Input blocked by guardrail' in caplog.text
@@ -535,7 +535,7 @@ class TestInputGuardrailWarn:
             TestModel(),
             capabilities=[InputGuardrail(guard=lambda text: True, on_fail='warn')],
         )
-        with caplog.at_level(logging.WARNING, logger='pydantic_harness.guardrails'):
+        with caplog.at_level(logging.WARNING, logger='pydantic_ai_harness.guardrails'):
             result = await agent.run('Hello')
         assert result.output is not None
         assert 'Input blocked' not in caplog.text
@@ -570,7 +570,7 @@ class TestInputGuardrailWarn:
             return False
 
         agent = Agent(TestModel(), capabilities=[InputGuardrail(context_guard=ctx_guard, on_fail='warn')])
-        with caplog.at_level(logging.WARNING, logger='pydantic_harness.guardrails'):
+        with caplog.at_level(logging.WARNING, logger='pydantic_ai_harness.guardrails'):
             result = await agent.run('Hello')
         assert result.output is not None
         assert 'Input blocked by guardrail' in caplog.text
@@ -598,7 +598,7 @@ class TestOutputGuardrailWarn:
             TestModel(custom_output_text='bad output'),
             capabilities=[OutputGuardrail(guard=lambda text: False, on_fail='warn')],
         )
-        with caplog.at_level(logging.WARNING, logger='pydantic_harness.guardrails'):
+        with caplog.at_level(logging.WARNING, logger='pydantic_ai_harness.guardrails'):
             result = await agent.run('Hello')
         assert result.output == 'bad output'
         assert 'Output blocked by guardrail' in caplog.text
@@ -609,7 +609,7 @@ class TestOutputGuardrailWarn:
             TestModel(custom_output_text='good output'),
             capabilities=[OutputGuardrail(guard=lambda text: True, on_fail='warn')],
         )
-        with caplog.at_level(logging.WARNING, logger='pydantic_harness.guardrails'):
+        with caplog.at_level(logging.WARNING, logger='pydantic_ai_harness.guardrails'):
             result = await agent.run('Hello')
         assert result.output == 'good output'
         assert 'Output blocked' not in caplog.text
@@ -676,7 +676,7 @@ class TestOutputGuardrailWarn:
             TestModel(custom_output_text='bad output'),
             capabilities=[OutputGuardrail(context_guard=ctx_guard, on_fail='warn')],
         )
-        with caplog.at_level(logging.WARNING, logger='pydantic_harness.guardrails'):
+        with caplog.at_level(logging.WARNING, logger='pydantic_ai_harness.guardrails'):
             result = await agent.run('Hello')
         assert result.output == 'bad output'
         assert 'Output blocked by guardrail' in caplog.text
@@ -806,7 +806,7 @@ class TestAsyncGuardrailMonitoring:
             TestModel(custom_output_text='model output'),
             capabilities=[AsyncGuardrail(guard=guard, mode='monitoring')],
         )
-        with caplog.at_level(logging.WARNING, logger='pydantic_harness.guardrails'):
+        with caplog.at_level(logging.WARNING, logger='pydantic_ai_harness.guardrails'):
             result = await agent.run('Hello')
         assert result.output == 'model output'
         assert 'suspicious content' in caplog.text
@@ -949,7 +949,7 @@ class TestAsyncGuardrailContextModes:
             TestModel(custom_output_text='model output'),
             capabilities=[AsyncGuardrail(guard=ctx_guard, mode='monitoring')],
         )
-        with caplog.at_level(logging.WARNING, logger='pydantic_harness.guardrails'):
+        with caplog.at_level(logging.WARNING, logger='pydantic_ai_harness.guardrails'):
             result = await agent.run('Hello')
         assert result.output == 'model output'
         assert 'monitoring flag' in caplog.text
@@ -1000,7 +1000,7 @@ class TestAsyncGuardrailMisc:
 class TestImports:
     def test_import_from_package(self) -> None:
         """All public symbols should be importable from the package root."""
-        from pydantic_harness import (
+        from pydantic_ai_harness import (
             AsyncGuardrail,
             BudgetExceededError,
             CostGuard,
@@ -1030,7 +1030,7 @@ class TestImports:
 
     def test_import_from_guardrails_module(self) -> None:
         """All public symbols should be importable from the guardrails module."""
-        from pydantic_harness.guardrails import (
+        from pydantic_ai_harness.guardrails import (
             AsyncGuardrail,
             BudgetExceededError,
             CostGuard,

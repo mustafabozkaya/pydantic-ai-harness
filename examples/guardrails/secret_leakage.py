@@ -15,7 +15,7 @@ import logfire
 from dotenv import load_dotenv
 from pydantic_ai import Agent
 
-from pydantic_harness import OutputBlocked, OutputGuardrail
+from pydantic_ai_harness import OutputBlocked, OutputGuardrail
 
 load_dotenv()
 logfire.configure()

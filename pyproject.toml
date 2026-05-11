@@ -3,14 +3,16 @@ requires = ['hatchling', 'uv-dynamic-versioning>=0.7.0']
 build-backend = 'hatchling.build'
 
 [project]
-name = 'pydantic-harness'
+name = 'pydantic-ai-harness'
 dynamic = ['version']
-description = 'Agent harness for composable, reusable AI agent capabilities, built on PydanticAI'
+description = 'The batteries for your Pydantic AI agent'
 readme = 'README.md'
 requires-python = '>=3.10'
 license = 'MIT'
 authors = [
-    { name = 'Pydantic Services Inc.' },
+    { name = 'Douwe Maan', email = 'douwe@pydantic.dev' },
+    { name = 'David SF', email = 'david.sanchez@pydantic.dev' },
+    { name = 'Aditya Vardhan', email = 'aditya@pydantic.dev' },
 ]
 classifiers = [
     'Development Status :: 3 - Alpha',
@@ -21,22 +23,46 @@ classifiers = [
     'Programming Language :: Python :: 3.11',
     'Programming Language :: Python :: 3.12',
     'Programming Language :: Python :: 3.13',
+    'Programming Language :: Python :: 3.14',
     'Topic :: Software Development :: Libraries',
     'Typing :: Typed',
 ]
-dependencies = ['pydantic-ai-slim>=1.76.0']
+dependencies = [
+    'pydantic-ai-slim>=1.89.1',
+]
+
+[project.optional-dependencies]
+code-mode = [
+    'pydantic-monty>=0.0.16',
+]
+# Extras metadata has no native redirect syntax, so aliases are represented as duplicate extras.
+codemode = [
+    'pydantic-monty>=0.0.16',
+]
+temporal = [
+    'pydantic-ai-slim[temporal]',
+]
+dbos = [
+    'pydantic-ai-slim[dbos]',
+]
 
 [project.urls]
-Homepage = 'https://github.com/pydantic/pydantic-harness'
-Source = 'https://github.com/pydantic/pydantic-harness'
-Issues = 'https://github.com/pydantic/pydantic-harness/issues'
+Homepage = 'https://github.com/pydantic/pydantic-ai-harness'
+Source = 'https://github.com/pydantic/pydantic-ai-harness'
+Issues = 'https://github.com/pydantic/pydantic-ai-harness/issues'
 
 [dependency-groups]
 dev = [
-    'pytest',
-    'anyio[trio]',
+    'pydantic-ai-harness[code-mode]',
+    # Floors selected to keep the `test-floor` job (using `--resolution lowest-direct`)
+    # working: `anyio>=4.11.0` is when the pytest plugin started registering the
+    # `anyio_mode` ini option. `pytest-anyio` has only version 0.0.0 on PyPI, so no
+    # floor. The rest match pydantic-ai's discipline.
+    'pytest>=9.0.0',
+    'anyio[trio]>=4.11.0',
     'pytest-anyio',
-    'coverage',
+    'coverage>=7.10.7',
+    'logfire[httpx]>=4.31.0',
 ]
 lint = [
     'ruff>=0.14',
@@ -56,12 +82,14 @@ vcs = 'git'
 style = 'pep440'
 bump = true
 
+
 [tool.hatch.build.targets.wheel]
-packages = ['src/pydantic_harness']
+packages = ['pydantic_ai_harness']
 
 [tool.ruff]
 line-length = 120
 target-version = 'py310'
+exclude = ['template', 'legacy']
 
 [tool.ruff.lint]
 extend-select = ['Q', 'RUF100', 'C90', 'UP', 'I', 'D', 'TID251']
@@ -85,25 +113,34 @@ quote-style = 'single'
 [tool.pyright]
 pythonVersion = '3.10'
 typeCheckingMode = 'strict'
-exclude = ['examples', '.venv']
+exclude = ['examples', 'template', '.venv', 'legacy']
 executionEnvironments = [
     { root = 'tests', reportPrivateUsage = false },
 ]
 
 [tool.pytest.ini_options]
+testpaths = ['tests']
 xfail_strict = true
-filterwarnings = ['error']
+filterwarnings = [
+    'error',
+    # DBOS's run_sync triggers this on Python 3.12+ — not our code.
+    'ignore:There is no current event loop:DeprecationWarning',
+]
 anyio_mode = 'auto'
 
 [tool.coverage.run]
 branch = true
-source = ['pydantic_harness', 'tests']
+source = ['pydantic_ai_harness', 'tests']
+
+[tool.coverage.paths]
+source = ['.', '/home/runner/work/pydantic-ai-harness/pydantic-ai-harness']
 
 [tool.coverage.report]
 fail_under = 100
 show_missing = true
 exclude_lines = [
     'pragma: no cover',
+    'pragma: lax no cover',
     'assert_never',
     'if TYPE_CHECKING:',
 ]

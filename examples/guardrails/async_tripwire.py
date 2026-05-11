@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage
 
-from pydantic_harness import AsyncGuardrail, GuardrailFailed, GuardrailResult
+from pydantic_ai_harness import AsyncGuardrail, GuardrailFailed, GuardrailResult
 
 load_dotenv()
 logfire.configure()

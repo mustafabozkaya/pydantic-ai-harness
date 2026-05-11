@@ -13,7 +13,7 @@ import logfire
 from dotenv import load_dotenv
 from pydantic_ai import Agent
 
-from pydantic_harness import BudgetExceededError, CostGuard
+from pydantic_ai_harness import BudgetExceededError, CostGuard
 
 load_dotenv()
 logfire.configure()

@@ -7,7 +7,7 @@ Built on Pydantic AI's native capabilities API.
 Example:
     ```python
     from pydantic_ai import Agent
-    from pydantic_harness import InputGuardrail, OutputGuardrail, CostGuard, ToolGuard
+    from pydantic_ai_harness import InputGuardrail, OutputGuardrail, CostGuard, ToolGuard
 
     agent = Agent(
         'openai:gpt-4.1',
@@ -61,7 +61,7 @@ class BudgetExceededError(GuardrailError):
         detail: A human-readable description of which limit was breached.
     """
 
-    def __init__(self, detail: str) -> None:  # noqa: D107
+    def __init__(self, detail: str) -> None:
         self.detail = detail
         super().__init__(detail)
 
@@ -74,7 +74,7 @@ class ToolBlocked(GuardrailError):
         reason: Why the tool was blocked.
     """
 
-    def __init__(self, tool_name: str, *, reason: str = '') -> None:  # noqa: D107
+    def __init__(self, tool_name: str, *, reason: str = '') -> None:
         self.tool_name = tool_name
         self.reason = reason
         msg = f"Tool '{tool_name}' blocked"
@@ -90,7 +90,7 @@ class GuardrailFailed(GuardrailError):
         result: The :class:`GuardrailResult` that triggered the failure.
     """
 
-    def __init__(self, result: GuardrailResult) -> None:  # noqa: D107
+    def __init__(self, result: GuardrailResult) -> None:
         self.result = result
         super().__init__(f'Guardrail failed: {result.reason}')
 
@@ -216,7 +216,7 @@ class InputGuardrail(AbstractCapability[Any]):
     Example:
         ```python
         from pydantic_ai import Agent
-        from pydantic_harness import InputGuardrail
+        from pydantic_ai_harness import InputGuardrail
 
         async def check_toxicity(text: str) -> bool:
             # Call a moderation API ...
@@ -288,7 +288,7 @@ class OutputGuardrail(AbstractCapability[Any]):
     Example:
         ```python
         from pydantic_ai import Agent
-        from pydantic_harness import OutputGuardrail
+        from pydantic_ai_harness import OutputGuardrail
 
         def no_secrets(text: str) -> bool:
             return 'sk-' not in text
@@ -355,7 +355,7 @@ class CostGuard(AbstractCapability[Any]):
     Example:
         ```python
         from pydantic_ai import Agent
-        from pydantic_harness import CostGuard
+        from pydantic_ai_harness import CostGuard
 
         agent = Agent(
             'openai:gpt-4.1',
@@ -415,7 +415,7 @@ class ToolGuard(AbstractCapability[Any]):
     Example:
         ```python
         from pydantic_ai import Agent
-        from pydantic_harness import ToolGuard
+        from pydantic_ai_harness import ToolGuard
 
         async def ask_user(tool_name: str, args: dict) -> bool:
             return input(f'Allow {tool_name}? (y/n) ').lower() == 'y'
@@ -508,7 +508,7 @@ class AsyncGuardrail(AbstractCapability[Any]):
         ```python
         from pydantic_ai import Agent
         from pydantic_ai.messages import ModelMessage
-        from pydantic_harness import AsyncGuardrail, GuardrailResult
+        from pydantic_ai_harness import AsyncGuardrail, GuardrailResult
 
         async def prompt_injection_check(messages: list[ModelMessage]) -> GuardrailResult:
             # Run a classifier ...

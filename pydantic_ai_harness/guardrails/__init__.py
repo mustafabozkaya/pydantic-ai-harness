@@ -1,18 +1,14 @@
-"""Agent harness for composable, reusable AI agent capabilities, built on PydanticAI.
+"""Guardrail capabilities: input/output validation, cost budgets, tool gating, and async checks."""
 
-Usage:
-    from pydantic_harness import Memory, Skills, Guardrails, ...
-"""
-
-# Each capability module is imported and re-exported here.
-# Capabilities are listed alphabetically.
-
-from pydantic_harness.guardrails import (
+from pydantic_ai_harness.guardrails._capability import (
+    AsyncGuardFunc,
     AsyncGuardrail,
     BudgetExceededError,
+    ContextGuardFunc,
     CostGuard,
     GuardrailError,
     GuardrailFailed,
+    GuardrailMode,
     GuardrailResult,
     InputBlocked,
     InputGuardrail,
@@ -22,12 +18,15 @@ from pydantic_harness.guardrails import (
     ToolGuard,
 )
 
-__all__: list[str] = [
+__all__ = [
+    'AsyncGuardFunc',
     'AsyncGuardrail',
     'BudgetExceededError',
+    'ContextGuardFunc',
     'CostGuard',
     'GuardrailError',
     'GuardrailFailed',
+    'GuardrailMode',
     'GuardrailResult',
     'InputBlocked',
     'InputGuardrail',
