@@ -296,7 +296,7 @@ class TestReadmeQuickStart:
             FunctionModel(_model_fn),
             capabilities=[
                 # Wire the fake HN tools through the `MCP` capability the same way
-                # the README does -- `local=` overrides the default FastMCP HTTP
+                # the README does -- `local=` overrides the default MCP HTTP
                 # toolset with our in-process fake, so the test exercises the same
                 # capability composition path as production without any network.
                 # MCP's `__init__` narrows `local` to MCP-specific types, but the

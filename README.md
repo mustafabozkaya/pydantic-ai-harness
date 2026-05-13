@@ -59,7 +59,7 @@ agent = Agent(
         CodeMode(),
         # Connect to any MCP server -- here, the open-source Hacker News server
         # (https://github.com/cyanheads/hn-mcp-server). native=False forces the
-        # local FastMCP toolset so CodeMode can wrap the tools; without it,
+        # local MCP toolset so CodeMode can wrap the tools; without it,
         # providers that natively support MCP server connectors execute the tools
         # server-side and bypass the sandbox.
         MCP('https://hn.caseyjhand.com/mcp', native=False),
