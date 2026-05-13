@@ -32,6 +32,15 @@ on:
 permissions:
   contents: read
 
+# `UV_FROZEN=1` so the lock-resolved sync + the editable-overlay of pydantic-ai-slim /
+# pydantic-graph stays put when the subsequent `uv run ruff/pyright/pytest` calls fire.
+# Without this, `uv run` auto-re-resolves against PyPI ("Ignoring existing lockfile due
+# to change in resolution mode"), silently uninstalls the overlay, and ends up testing
+# harness main against whatever `pydantic-ai-slim` is on PyPI — i.e. the compat check
+# becomes a no-op against the actual pydantic-ai checkout we wanted to validate.
+env:
+  UV_FROZEN: '1'
+
 jobs:
   compat:
     name: harness vs pydantic-ai @ ${{ inputs.pydantic-ai-ref }}
