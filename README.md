@@ -162,9 +162,16 @@ logfire.instrument_pydantic_ai()
 agent = Agent(
     'anthropic:claude-opus-4-7',
     capabilities=[
-        # --- Execution ---
+        # --- Tool execution & discovery ---
         # Wraps every tool into a single run_code, sandboxed by Monty.
         CodeMode(),
+
+        # Progressive tool discovery for large tool sets (e.g. a chatty MCP server):
+        # tools marked `defer_loading=True` stay out of the model's context until it
+        # searches for them -- native provider tool search where available, a local
+        # `search_tools` tool elsewhere. Composes with CodeMode: a discovered tool
+        # folds into `run_code` from that step on.
+        ToolSearch(),
 
         # --- Reasoning ---
         # Provider-adaptive thinking; uses native extended thinking on supporting models.
@@ -184,13 +191,6 @@ agent = Agent(
 
         # Provider-adaptive web search; falls back to a local DuckDuckGo implementation.
         WebSearch(),
-
-        # Progressive tool discovery for large tool sets (e.g. a chatty MCP server):
-        # tools marked `defer_loading=True` stay out of the model's context until it
-        # searches for them -- native provider tool search where available, a local
-        # `search_tools` tool elsewhere. Composes with CodeMode: a discovered tool
-        # folds into `run_code` from that step on.
-        ToolSearch(),
 
         # Filesystem + shell. By @vstorm-co: https://github.com/vstorm-co/pydantic-ai-backend
         ConsoleCapability(),
