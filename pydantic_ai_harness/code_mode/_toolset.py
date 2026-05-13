@@ -173,6 +173,8 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
     folded into `run_code` once they've been discovered (`defer_loading=False`).
     Tools annotated with `unless_native` likewise stay native so
     `Model.prepare_request` can drop them when the provider supports the native tool.
+    To keep a Tool Search corpus native even after discovery (e.g. for prompt-cache
+    stability), pass a `tool_selector` that excludes tools with `with_native` set.
     """
 
     tool_selector: ToolSelector[AgentDepsT] = 'all'
