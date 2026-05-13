@@ -58,15 +58,15 @@ agent = Agent(
         # asyncio.gather, and local filtering -- one model round-trip for N tool calls.
         CodeMode(),
         # Connect to any MCP server -- here, the open-source Hacker News server
-        # (https://github.com/cyanheads/hn-mcp-server). builtin=False forces the
+        # (https://github.com/cyanheads/hn-mcp-server). native=False forces the
         # local FastMCP toolset so CodeMode can wrap the tools; without it,
         # providers that natively support MCP server connectors execute the tools
         # server-side and bypass the sandbox.
-        MCP('https://hn.caseyjhand.com/mcp', builtin=False),
-        # Provider-adaptive web search; builtin=False routes through the local
+        MCP('https://hn.caseyjhand.com/mcp', native=False),
+        # Provider-adaptive web search; native=False routes through the local
         # DuckDuckGo fallback (the [duckduckgo] extra above) so CodeMode can batch
         # web searches alongside the HN calls in a single run_code.
-        WebSearch(builtin=False),
+        WebSearch(native=False),
     ],
 )
 

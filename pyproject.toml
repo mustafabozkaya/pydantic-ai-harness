@@ -140,3 +140,9 @@ exclude_lines = [
     'assert_never',
     'if TYPE_CHECKING:',
 ]
+
+# TEMPORARY: pull pydantic-ai from `main` for pydantic/pydantic-ai#5143 (native Tool Search),
+# which `CodeMode`'s deferred-loading handling depends on. Drop this section and bump the
+# `pydantic-ai-slim` floor above once #5143 ships in a release. See pydantic-ai-harness#232.
+[tool.uv.sources]
+pydantic-ai-slim = { git = 'https://github.com/pydantic/pydantic-ai', subdirectory = 'pydantic_ai_slim', rev = 'main' }

@@ -86,6 +86,10 @@ CodeMode(tools={'code_mode': True})
 
 Tools that match the selector are wrapped inside `run_code`. Non-matching tools remain available as regular tool calls.
 
+### Tool Search
+
+Tools marked `defer_loading=True` (Pydantic AI's [Tool Search](https://ai.pydantic.dev/tools-advanced/#tool-search)) are never sandboxed while undiscovered: they stay native pass-through so the deferred-loading contract is honored — neither rendered into `run_code`'s description nor sent to the model. Once the model discovers a tool, it comes back with `defer_loading=False` and is folded into `run_code` from that step on. The `search_tools` discovery tool (local-fallback path) is always kept native alongside `run_code`.
+
 ### Metadata-based selection
 
 ```python
