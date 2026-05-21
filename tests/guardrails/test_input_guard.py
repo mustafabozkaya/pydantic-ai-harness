@@ -525,12 +525,25 @@ class TestInputGuardStreaming:
     """`InputGuard` behaves the same under `run_stream()` as under `run()`."""
 
     async def test_parallel_guard_under_run_stream(self):
+        """Regression guard for a reviewed deadlock concern.
+
+        A pydantic-ai-correctness review suspected `parallel=True` could deadlock
+        under `run_stream()`, because the streaming model handler parks until the
+        caller drains the stream while the parallel branch awaits that same
+        handler task. It does not — the graph hands off on `stream_ready`, which
+        the handler sets before parking. The `wait_for` makes a reintroduced hang
+        fail fast here instead of stalling CI.
+        """
         agent = Agent(
             TestModel(custom_output_text='streamed'),
             capabilities=[InputGuard[None](guard=lambda _: True, parallel=True)],
         )
-        async with agent.run_stream('hello') as result:
-            assert (await result.get_output()) == 'streamed'
+
+        async def run() -> str:
+            async with agent.run_stream('hello') as result:
+                return await result.get_output()
+
+        assert await asyncio.wait_for(run(), timeout=10) == 'streamed'
 
     async def test_block_under_run_stream(self):
         agent = Agent(
