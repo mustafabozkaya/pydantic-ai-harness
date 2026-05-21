@@ -20,7 +20,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import RunContext
 from pydantic_ai.usage import RunUsage
 
-from pydantic_ai_harness import InputBlocked, InputGuard
+from pydantic_ai_harness import GuardResult, InputBlocked, InputGuard
 from pydantic_ai_harness.guardrails._capability import _extract_prompt  # pyright: ignore[reportPrivateUsage]
 
 pytestmark = pytest.mark.anyio
@@ -70,14 +70,23 @@ class TestInputGuard:
         assert result.output == 'ok'
         assert calls == ['hello']
 
-    async def test_block_uses_block_message(self):
+    async def test_block_uses_default_message(self):
         agent = Agent(
             TestModel(custom_output_text='would be model output'),
-            capabilities=[InputGuard[None](guard=lambda _: False, block_message='nope')],
+            capabilities=[InputGuard[None](guard=lambda _: False)],
         )
         result = await agent.run('hello')
 
-        assert result.output == 'nope'
+        assert result.output == 'Request blocked by input guardrail.'
+
+    async def test_guard_result_without_message_uses_default(self):
+        agent = Agent(
+            TestModel(custom_output_text='would be model output'),
+            capabilities=[InputGuard[None](guard=lambda _: GuardResult(safe=False))],
+        )
+        result = await agent.run('hello')
+
+        assert result.output == 'Request blocked by input guardrail.'
 
     async def test_async_guard_awaited(self):
         async def guard(prompt: str) -> bool:
@@ -97,14 +106,30 @@ class TestInputGuard:
         with pytest.raises(InputBlocked, match='policy violation'):
             await agent.run('anything')
 
-    async def test_block_message_callable_receives_prompt(self):
+    async def test_guard_result_message_reflects_prompt(self):
+        def guard(prompt: str) -> GuardResult:
+            return GuardResult(safe=False, message=f'blocked: {prompt}')
+
         agent = Agent(
             TestModel(custom_output_text='would be model output'),
-            capabilities=[InputGuard[None](guard=lambda _: False, block_message=lambda p: f'blocked: {p}')],
+            capabilities=[InputGuard[None](guard=guard)],
         )
         result = await agent.run('secret stuff')
 
         assert result.output == 'blocked: secret stuff'
+
+    async def test_guard_receives_run_context(self):
+        seen: list[object] = []
+
+        def guard(ctx: RunContext[None], prompt: str) -> bool:
+            seen.append(ctx.prompt)
+            return True
+
+        agent = Agent(TestModel(custom_output_text='ok'), capabilities=[InputGuard[None](guard=guard)])
+        result = await agent.run('hello')
+
+        assert result.output == 'ok'
+        assert seen == ['hello']
 
     async def test_sequential_runs_guard_then_handler(self):
         run_ctx, req_ctx = _build_ctx_and_req()
@@ -210,11 +235,11 @@ class TestInputGuardParallel:
                 raise
             return ModelResponse(parts=[TextPart(content='should never')])  # pragma: no cover
 
-        async def guard(_: str) -> bool:
+        async def guard(_: str) -> GuardResult:
             await handler_started.wait()
-            return False
+            return GuardResult(safe=False, message='blocked!')
 
-        ig = InputGuard[None](guard=guard, parallel=True, block_message='blocked!')
+        ig = InputGuard[None](guard=guard, parallel=True)
         with pytest.raises(SkipModelRequest) as exc_info:
             await ig.wrap_model_request(run_ctx, request_context=req_ctx, handler=slow_handler)
 
@@ -267,12 +292,12 @@ class TestInputGuardParallel:
         async def fast_handler(_: Any) -> ModelResponse:
             return ModelResponse(parts=[TextPart(content='from handler')])
 
-        async def slow_guard(_: str) -> bool:
+        async def slow_guard(_: str) -> GuardResult:
             await release_guard.wait()
-            return False
+            return GuardResult(safe=False, message='late trip')
 
         async def runner() -> ModelResponse:
-            ig = InputGuard[None](guard=slow_guard, parallel=True, block_message='late trip')
+            ig = InputGuard[None](guard=slow_guard, parallel=True)
             return await ig.wrap_model_request(run_ctx, request_context=req_ctx, handler=fast_handler)
 
         task = asyncio.create_task(runner())

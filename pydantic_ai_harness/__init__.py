@@ -6,6 +6,7 @@ if TYPE_CHECKING:
     from .code_mode import CodeMode
     from .guardrails import (
         GuardrailError,
+        GuardResult,
         InputBlocked,
         InputGuard,
         InputGuardFunc,
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     'CodeMode',
+    'GuardResult',
     'GuardrailError',
     'InputBlocked',
     'InputGuard',
@@ -26,6 +28,7 @@ __all__ = [
 ]
 
 _GUARDRAIL_EXPORTS = {
+    'GuardResult',
     'GuardrailError',
     'InputBlocked',
     'InputGuard',

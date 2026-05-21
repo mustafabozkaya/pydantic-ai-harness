@@ -1,6 +1,7 @@
 """Input and output guardrails for Pydantic AI agents."""
 
 from pydantic_ai_harness.guardrails._capability import (
+    GuardResult,
     InputGuard,
     InputGuardFunc,
     OutputGuard,
@@ -13,6 +14,7 @@ from pydantic_ai_harness.guardrails._exceptions import (
 )
 
 __all__ = [
+    'GuardResult',
     'GuardrailError',
     'InputBlocked',
     'InputGuard',

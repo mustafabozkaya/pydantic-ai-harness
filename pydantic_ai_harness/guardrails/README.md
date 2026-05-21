@@ -10,9 +10,9 @@ Agents take unstructured input from users and return unstructured output to call
 
 Two capabilities, each backed by a callable you supply.
 
-| Capability | Checks | When a guard returns `False` | When a guard raises |
+| Capability | Checks | When a guard blocks | When a guard raises |
 |---|---|---|---|
-| `InputGuard` | The user prompt before each model request | `SkipModelRequest` — the model call is skipped and `block_message` becomes the response for that step | The exception propagates out of the run |
+| `InputGuard` | The user prompt before the first model request | `SkipModelRequest` — the model call is skipped and a refusal message becomes the response for that step | The exception propagates out of the run |
 | `OutputGuard` | The final run output | `OutputBlocked` is raised | The exception propagates out of the run |
 
 The asymmetry is intentional. Blocking the input means no tokens are spent, so a graceful refusal is almost always what you want. Blocking the output means the model already generated a response you do not want exposed — raising forces the caller to decide what to do next.
@@ -33,7 +33,7 @@ def no_pii(output: object) -> bool:
 
 
 agent = Agent(
-    'openai:gpt-4.1',
+    'openai:gpt-5.4',
     capabilities=[
         InputGuard(guard=no_secrets),
         OutputGuard(guard=no_pii),
@@ -73,7 +73,7 @@ async def check_with_moderation_api(prompt: str) -> bool:
 
 
 agent = Agent(
-    'openai:gpt-4.1',
+    'openai:gpt-5.4',
     capabilities=[InputGuard(guard=check_with_moderation_api)],
 )
 ```
@@ -88,34 +88,44 @@ InputGuard(guard=slow_async_classifier, parallel=True)
 
 For fast local checks (regex, keyword lookup, a small classifier) sequential is usually fine — the overhead is measured in microseconds and the wiring is simpler.
 
-## Customising the block message
+## Refusal messages
+
+A guard returns either a bare `bool` (`True` = safe) or a `GuardResult`. Return a `GuardResult` to attach a message describing what tripped the guard — built at the moment the guard decides, so it can carry the guard's own reasoning instead of a string frozen at construction time:
 
 ```python
-InputGuard(
-    guard=no_secrets,
-    block_message='This request looks like it contains credentials. Please rephrase.',
-)
+from pydantic_ai_harness import GuardResult, InputGuard
+
+
+def no_secrets(prompt: str) -> GuardResult:
+    if 'api_key' in prompt.lower():
+        return GuardResult(safe=False, message='Your message looks like it contains an API key — please remove it.')
+    return GuardResult(safe=True)
+
+
+InputGuard(guard=no_secrets)
 ```
 
-The text is returned as the model response for that step, so the caller sees a normal completion rather than an exception. Multi-turn agents can continue the conversation from there.
+For `InputGuard` the message is returned as the model response for that step, so the caller sees a normal completion rather than an exception — multi-turn agents can continue from there. For `OutputGuard` the message is attached to the `OutputBlocked` exception. A bare `False`, or a `GuardResult` with `message=None`, falls back to a default message.
 
-`block_message` also accepts a callable, so the message can reflect what was actually submitted instead of a fixed string. `InputGuard` passes the prompt that tripped the guard; `OutputGuard` passes the blocked output:
+## Accessing run context
+
+A guard may take a `RunContext` as its first parameter when it needs run state — `deps` for tenant- or role-aware policy, message history for conversation-aware checks. The parameter is detected from the signature, so prompt-only guards need not declare it:
 
 ```python
-InputGuard(
-    guard=no_secrets,
-    block_message=lambda prompt: f'Blocked — {len(prompt)} characters were not sent to the model.',
-)
+from pydantic_ai import RunContext
+from pydantic_ai_harness import InputGuard
 
-OutputGuard(
-    guard=no_pii,
-    block_message=lambda output: f'Output withheld: {type(output).__name__} failed the PII check.',
-)
+
+def tenant_policy(ctx: RunContext[MyDeps], prompt: str) -> bool:
+    return ctx.deps.tier == 'pro' or 'advanced-feature' not in prompt
+
+
+InputGuard(guard=tenant_policy)
 ```
 
 ## Hard-fail path
 
-Returning `False` from a guard is the graceful path. If you want the caller to see an exception instead, raise from the guard:
+Reporting a value unsafe — returning `False` or a blocking `GuardResult` — is the graceful path. If you want the caller to see an exception instead, raise from the guard:
 
 ```python
 from pydantic_ai_harness import InputBlocked
@@ -132,17 +142,23 @@ Any exception raised by the guard propagates as-is — you can use `InputBlocked
 ## API
 
 ```python
+@dataclass
+class GuardResult:
+    safe: bool
+    message: str | None = None
+
+
 InputGuard(
-    guard: Callable[[str], bool | Awaitable[bool]],
+    guard: Callable[..., bool | GuardResult | Awaitable[bool | GuardResult]],
     parallel: bool = False,
-    block_message: str | Callable[[str], str] = 'Request blocked by input guardrail.',
 )
 
 OutputGuard(
-    guard: Callable[[object], bool | Awaitable[bool]],
-    block_message: str | Callable[[object], str] = 'Output blocked by output guardrail.',
+    guard: Callable[..., bool | GuardResult | Awaitable[bool | GuardResult]],
 )
 ```
+
+The guard callable takes the inspected value — the prompt for `InputGuard`, `result.output` for `OutputGuard` — optionally preceded by a `RunContext`.
 
 ## Relationship to `pydantic-ai-shields`
 
