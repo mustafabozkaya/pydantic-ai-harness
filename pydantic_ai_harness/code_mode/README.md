@@ -92,7 +92,14 @@ When you mark tools or whole toolsets `defer_loading=True` ([Tool Search](https:
 
 That fold-in grows `run_code`'s description, which invalidates the prompt-cache prefix once at the moment of discovery (turns with no discovery stay cache-warm). Two ways to avoid the bust:
 
-- Add [`CodeModeDynamicCatalog`](../code_mode_dynamic_catalog/README.md) to keep `run_code.description` static across discoveries — the catalog moves to instructions and new tools are announced via [`ctx.enqueue`](https://ai.pydantic.dev/api/tools/#pydantic_ai.tools.RunContext.enqueue) instead of by rebuilding the description.
+- Pass `dynamic_catalog=True` to keep `run_code.description` static across discoveries — the catalog of sandboxed-tool signatures moves into agent instructions (as a dynamic [`InstructionPart`](https://ai.pydantic.dev/api/messages/#pydantic_ai.messages.InstructionPart)) and newly-discovered tools are announced via [`ctx.enqueue`](https://ai.pydantic.dev/api/tools/#pydantic_ai.tools.RunContext.enqueue) instead of by rebuilding the description:
+
+```python
+CodeMode(dynamic_catalog=True)
+```
+
+  This pays off when paired with Tool Search: the tool-definitions block stays byte-stable so the prefix cache survives discoveries, at the cost of a larger (but cache-friendly) system prompt. With a fixed toolset and no Tool Search, the default keeps the system prompt shorter and is the better choice.
+
 - To instead keep a Tool Search corpus fully native — never folded into `run_code`, but not callable from inside it — exclude it with a `tools` selector; corpus members carry `with_native` set to the managing native tool:
 
 ```python
