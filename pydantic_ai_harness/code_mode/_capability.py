@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic_ai import AbstractToolset
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
 from pydantic_ai.capabilities._tool_search import ToolSearch as _ToolSearch
-from pydantic_ai.messages import ModelRequest, ModelResponse, NativeToolSearchReturnPart, SystemPromptPart
+from pydantic_ai.messages import ModelResponse, NativeToolSearchReturnPart, SystemPromptPart
 from pydantic_ai.tools import AgentDepsT, RunContext, ToolDefinition, ToolSelector
 
 from pydantic_ai_harness.code_mode._toolset import CodeModeToolset
@@ -157,13 +157,10 @@ class CodeMode(AbstractCapability[AgentDepsT]):
             return
         self._announced_tools.update(fresh)
         listing = ', '.join(f'`{name}`' for name in fresh)
-        # Enqueue as a `ModelRequest(SystemPromptPart)` so it's framed as system-level
-        # context. `RunContext.enqueue` doesn't accept a bare `SystemPromptPart` (provider
-        # mappings for mid-conversation system content vary -- see pydantic/pydantic-ai#5437),
-        # but a `ModelRequest` passthrough is allowed and rendered inline. Once #5437 lands,
-        # providers that currently hoist mid-conversation system content will instead inline
-        # it as an XML-wrapped user prompt, making this cache-safe across providers.
-        ctx.enqueue(ModelRequest(parts=[SystemPromptPart(content=f'{_DISCOVERY_ANNOUNCEMENT_PREFIX}: {listing}.')]))
+        # Enqueue a `SystemPromptPart` so the announcement is framed as system-level context.
+        # Mid-conversation `SystemPromptPart`s are rendered inline (not hoisted to the top-level
+        # system prompt) on all providers since pydantic/pydantic-ai#5509, so this is cache-safe.
+        ctx.enqueue(SystemPromptPart(content=f'{_DISCOVERY_ANNOUNCEMENT_PREFIX}: {listing}.'))
 
 
 def _extract_discovered_names(content: Any) -> list[str]:

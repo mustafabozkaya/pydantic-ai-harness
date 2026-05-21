@@ -2020,7 +2020,7 @@ class TestDynamicCatalog:
         )
 
         assert len(ctx.pending_messages) == 1
-        request = ctx.pending_messages[0].request
+        [request] = ctx.pending_messages[0].messages
         assert isinstance(request, ModelRequest)
         [part] = request.parts
         assert isinstance(part, SystemPromptPart)
@@ -2110,7 +2110,7 @@ class TestDynamicCatalog:
         await cap.after_model_request(ctx, request_context=None, response=response)  # pyright: ignore[reportArgumentType]
 
         assert len(ctx.pending_messages) == 1
-        request = ctx.pending_messages[0].request
+        [request] = ctx.pending_messages[0].messages
         assert isinstance(request, ModelRequest)
         [part] = request.parts
         assert isinstance(part, SystemPromptPart) and '`weather`' in part.content
@@ -2157,8 +2157,10 @@ class TestDynamicCatalog:
         Two-step run:
           1. Model calls `search_tools(['weather'])` (the discovery surface).
           2. After the local tool-search returns, `CodeMode.after_tool_execute` enqueues a
-             `SystemPromptPart`; the pending-message queue drains it into the next
-             `ModelRequest`, the model sees it and replies.
+             `SystemPromptPart`; the pending-message queue drains it into the next request.
+             On the wire it renders as an (XML-wrapped) `UserPromptPart` — mid-conversation
+             system content is no longer hoisted (pydantic/pydantic-ai#5509) — so the model
+             sees the announcement inline and replies.
         """
         from pydantic_ai.capabilities import ToolSearch
         from pydantic_ai.messages import (
@@ -2170,11 +2172,12 @@ class TestDynamicCatalog:
             ToolCallPart,
             ToolReturnPart,
             ToolSearchReturnPart,
+            UserPromptPart,
         )
         from pydantic_ai.models.function import AgentInfo, FunctionModel
         from pydantic_ai.usage import RequestUsage
 
-        captured_system_prompts: list[list[str]] = []
+        captured_prompt_texts: list[list[str]] = []
         captured_descriptions: list[str] = []
 
         def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -2184,7 +2187,15 @@ class TestDynamicCatalog:
 
             last_request = messages[-1]
             assert isinstance(last_request, ModelRequest)
-            captured_system_prompts.append([p.content for p in last_request.parts if isinstance(p, SystemPromptPart)])
+            # The announcement may arrive as a `SystemPromptPart` or, after wire-rendering of
+            # mid-conversation system content, an (XML-wrapped) `UserPromptPart` — capture both.
+            captured_prompt_texts.append(
+                [
+                    p.content
+                    for p in last_request.parts
+                    if isinstance(p, (SystemPromptPart, UserPromptPart)) and isinstance(p.content, str)
+                ]
+            )
 
             if len(captured_descriptions) == 1:
                 return ModelResponse(
@@ -2206,9 +2217,9 @@ class TestDynamicCatalog:
 
         # `run_code.description` stayed static across both turns — no signature in the tool-defs block.
         assert all('async def' not in d for d in captured_descriptions)
-        # The discovery announcement landed in turn 2's request as a `SystemPromptPart`.
-        assert len(captured_system_prompts) >= 2
-        assert 'weather' in '\n'.join(captured_system_prompts[1])
+        # The discovery announcement landed in turn 2's request (system- or user-framed).
+        assert len(captured_prompt_texts) >= 2
+        assert 'weather' in '\n'.join(captured_prompt_texts[1])
         # The local `ToolSearchReturnPart` is in history.
         history = result.all_messages()
         assert any(
