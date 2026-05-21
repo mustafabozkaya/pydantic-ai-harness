@@ -61,7 +61,13 @@ def build_run_context(deps: T, run_step: int = 0) -> RunContext[T]:
     )
 
 
-async def build_ctx(deps: T, toolset: AbstractToolset[T], run_step: int = 0) -> RunContext[T]:
+async def build_ctx(
+    deps: T,
+    toolset: AbstractToolset[T],
+    run_step: int = 0,
+    *,
+    root_capability: Any = None,
+) -> RunContext[T]:
     """Build a `RunContext` with a prepared `ToolManager`.
 
     Use this for tests that call `call_tool` — `CodeModeToolset` requires
@@ -70,7 +76,7 @@ async def build_ctx(deps: T, toolset: AbstractToolset[T], run_step: int = 0) -> 
     from pydantic_ai.tool_manager import ToolManager
 
     ctx = build_run_context(deps, run_step=run_step)
-    tm = ToolManager(toolset=toolset)
+    tm = ToolManager(toolset=toolset, root_capability=root_capability)
     prepared_tm = await tm.for_run_step(ctx)
     ctx.tool_manager = prepared_tm
     return ctx
@@ -660,8 +666,8 @@ class TestCodeMode:
     # Deferred tools
     # ---------------------------------------------------------------------------
 
-    async def test_deferred_loading_tools_sandboxed(self) -> None:
-        """Tools with `defer_loading=True` (tool search) are sandboxed like normal tools."""
+    async def test_deferred_loading_tools_not_sandboxed(self) -> None:
+        """Tools with `defer_loading=True` (Tool Search) stay native so the deferred-loading contract is honored."""
 
         def later(x: int) -> str:
             """A deferred-loading tool."""
@@ -676,18 +682,108 @@ class TestCodeMode:
 
         description = tools['run_code'].tool_def.description
         assert description is not None
-        # Both tools should appear as sandboxed function signatures
+        # Non-deferred tools are sandboxed as usual.
+        assert 'async def add' in description
+        # The deferred-loading tool is NOT rendered into run_code's description...
+        assert 'later' not in description
+        # ...and stays exposed as a native tool with its `defer_loading` flag intact,
+        # so `ToolSearchToolset` / `Model.prepare_request` can drive discovery.
+        assert 'later' in tools
+        assert tools['later'].tool_def.defer_loading is True
+
+    async def test_deferred_loading_tool_sandboxed_once_discovered(self) -> None:
+        """Once a deferred tool is discovered (`defer_loading=False`) it folds into `run_code`."""
+
+        def later(x: int) -> str:
+            """A discovered tool."""
+            return str(x)  # pragma: no cover - tool body is not invoked in this test
+
+        # `defer_loading=False` mimics the post-discovery state ToolSearchToolset hands back.
+        toolset = FunctionToolset[None](tools=[Tool(add), Tool(later, defer_loading=False)])
+        wrapper = CodeMode[None]().get_wrapper_toolset(toolset)
+        assert isinstance(wrapper, CodeModeToolset)
+
+        ctx = build_run_context(None)
+        tools = await wrapper.get_tools(ctx)
+
+        description = tools['run_code'].tool_def.description
+        assert description is not None
         assert 'async def add' in description
         assert 'async def later' in description
-        # The deferred-loading tool should NOT be exposed as a native tool
         assert 'later' not in tools
 
-    async def test_deferred_execution_tools_promoted_to_native_with_warning(self) -> None:
-        """Tools with `kind='external'` (deferred execution) are excluded from sandbox but promoted to native."""
+    async def test_unless_native_tool_not_sandboxed(self) -> None:
+        """Tools annotated with `unless_native` stay native so `Model.prepare_request` can filter them."""
+        td_fallback = ToolDefinition(
+            name='duckduckgo_search',
+            description='DDG fallback.',
+            parameters_json_schema={'type': 'object', 'properties': {'q': {'type': 'string'}}, 'required': ['q']},
+            return_schema={'type': 'string'},
+            unless_native='web_search',
+        )
+        static = _StaticToolset([_make_address_tool_def('get_user', 'Get a user.', 'street'), td_fallback])
+        wrapper = CodeMode[None]().get_wrapper_toolset(static)
+        assert isinstance(wrapper, CodeModeToolset)
+
+        ctx = build_run_context(None)
+        tools = await wrapper.get_tools(ctx)
+
+        description = tools['run_code'].tool_def.description
+        assert description is not None
+        # Other tools are sandboxed as usual.
+        assert 'async def get_user' in description
+        # The unless_native tool's signature must NOT appear inside run_code's description.
+        assert 'duckduckgo_search' not in description
+
+    async def test_unless_native_tool_exposed_as_native(self) -> None:
+        """`unless_native` tools remain in the toolset's native tools so `Model.prepare_request` can drop them when the provider supports the native tool."""
+        td_fallback = ToolDefinition(
+            name='duckduckgo_search',
+            description='DDG fallback.',
+            parameters_json_schema={'type': 'object', 'properties': {'q': {'type': 'string'}}, 'required': ['q']},
+            return_schema={'type': 'string'},
+            unless_native='web_search',
+        )
+        static = _StaticToolset([td_fallback])
+        wrapper = CodeMode[None]().get_wrapper_toolset(static)
+        assert isinstance(wrapper, CodeModeToolset)
+
+        ctx = build_run_context(None)
+        tools = await wrapper.get_tools(ctx)
+
+        # The fallback tool is exposed as a native tool, with its unless_native annotation
+        # preserved so Model.prepare_request can filter it when the native tool is supported.
+        assert 'duckduckgo_search' in tools
+        assert tools['duckduckgo_search'].tool_def.unless_native == 'web_search'
+
+    async def test_no_unless_native_tool_is_sandboxed(self) -> None:
+        """Tools without an `unless_native` annotation are sandboxed as usual (confirms the guard only diverts truthy values)."""
+        td_plain = ToolDefinition(
+            name='duckduckgo_search',
+            description='DDG (no fallback annotation).',
+            parameters_json_schema={'type': 'object', 'properties': {'q': {'type': 'string'}}, 'required': ['q']},
+            return_schema={'type': 'string'},
+        )
+        static = _StaticToolset([td_plain])
+        wrapper = CodeMode[None]().get_wrapper_toolset(static)
+        assert isinstance(wrapper, CodeModeToolset)
+
+        ctx = build_run_context(None)
+        tools = await wrapper.get_tools(ctx)
+
+        description = tools['run_code'].tool_def.description
+        assert description is not None
+        # Without unless_native, the tool is sandboxed normally.
+        assert 'async def duckduckgo_search' in description
+        assert 'duckduckgo_search' not in tools
+
+    async def test_deferred_execution_tools_sandboxed(self) -> None:
+        """Tools with `kind='external'`/`'unapproved'` are sandboxed like any other tool; resolution happens via a `HandleDeferredToolCalls` capability."""
         td_external = ToolDefinition(
             name='approve_action',
             description='Needs approval.',
             parameters_json_schema={'type': 'object', 'properties': {'x': {'type': 'string'}}, 'required': ['x']},
+            return_schema={'type': 'string'},
             kind='external',
         )
         static = _StaticToolset([_make_address_tool_def('get_user', 'Get a user.', 'street'), td_external])
@@ -695,21 +791,14 @@ class TestCodeMode:
         assert isinstance(wrapper, CodeModeToolset)
 
         ctx = build_run_context(None)
-        with pytest.warns(UserWarning, match=r"tool 'approve_action' requires deferred execution"):
-            tools = await wrapper.get_tools(ctx)
+        tools = await wrapper.get_tools(ctx)
 
         description = tools['run_code'].tool_def.description
         assert description is not None
-        assert 'approve_action' not in description
-        # External tool is promoted to native — not lost
-        assert 'approve_action' in tools
-
-        # Second call must not warn again.
-        import warnings as _warnings
-
-        with _warnings.catch_warnings():
-            _warnings.simplefilter('error')
-            await wrapper.get_tools(ctx)
+        # The external tool appears as a sandboxed function signature.
+        assert 'async def approve_action' in description
+        # Not exposed as a native tool.
+        assert 'approve_action' not in tools
 
     async def test_tool_without_return_schema_warns(self) -> None:
         """A sandboxed tool with no return_schema triggers a one-time warning."""
@@ -1018,8 +1107,71 @@ class TestCodeMode:
         ctx = await build_ctx(None, wrapper)
         tools = await wrapper.get_tools(ctx)
 
-        with pytest.raises(ModelRetry, match='approval and deferral are not supported'):
+        with pytest.raises(ModelRetry, match='no `HandleDeferredToolCalls` capability resolved it'):
             await wrapper.call_tool('run_code', {'code': 'await needs_approval()'}, ctx, tools['run_code'])
+
+    async def test_handler_denial_surfaces_as_model_retry(self) -> None:
+        """A `HandleDeferredToolCalls` handler denying a sandboxed tool call surfaces the denial.
+
+        The denial raises `RuntimeError` inside the sandbox so the script can't mistake
+        the denial message for a regular string return. If the script doesn't catch it,
+        Monty re-raises as `MontyRuntimeError`, which the harness converts to `ModelRetry`
+        with the original denial message preserved in the trace.
+        """
+        try:
+            from pydantic_ai.capabilities import HandleDeferredToolCalls
+        except ImportError:  # pragma: no cover — only fires on floor-slim CI, which doesn't gate on coverage
+            pytest.skip('Requires pydantic-ai-slim with `HandleDeferredToolCalls` (next release after 1.86.1)')
+
+        from pydantic_ai.exceptions import ApprovalRequired as _ApprovalRequired
+        from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults, ToolDenied
+
+        def needs_approval() -> str:
+            """A tool that requires approval."""
+            raise _ApprovalRequired()
+
+        async def handler(ctx: RunContext[None], requests: DeferredToolRequests) -> DeferredToolResults:
+            return DeferredToolResults(
+                approvals={call.tool_call_id: ToolDenied(message='nope') for call in requests.approvals}
+            )
+
+        wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(needs_approval))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper, root_capability=HandleDeferredToolCalls(handler=handler))
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry, match=r'call denied: nope'):
+            await wrapper.call_tool('run_code', {'code': 'await needs_approval()'}, ctx, tools['run_code'])
+
+    async def test_approved_tool_re_raising_approval_required_surfaces_as_model_retry(self) -> None:
+        """If the approved tool body re-raises `ApprovalRequired`, pydantic-ai propagates it
+        without re-invoking the handler; the harness then converts it to a `ModelRetry`.
+
+        This guards the contract documented on `_resolve_single_deferred.Raises`: a re-raised
+        deferral after approval is *not* re-resolved — it bubbles up to the caller.
+        """
+        try:
+            from pydantic_ai.capabilities import HandleDeferredToolCalls
+        except ImportError:  # pragma: no cover — only fires on floor-slim CI, which doesn't gate on coverage
+            pytest.skip('Requires pydantic-ai-slim with `HandleDeferredToolCalls` (next release after 1.86.1)')
+
+        from pydantic_ai.exceptions import ApprovalRequired as _ApprovalRequired
+        from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults, ToolApproved
+
+        def always_needs_approval(ctx: RunContext[None]) -> str:
+            """Raises `ApprovalRequired` every time, even after being approved."""
+            raise _ApprovalRequired()
+
+        async def handler(ctx: RunContext[None], requests: DeferredToolRequests) -> DeferredToolResults:
+            return DeferredToolResults(approvals={call.tool_call_id: ToolApproved() for call in requests.approvals})
+
+        wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(always_needs_approval))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper, root_capability=HandleDeferredToolCalls(handler=handler))
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry, match='no `HandleDeferredToolCalls` capability resolved it'):
+            await wrapper.call_tool('run_code', {'code': 'await always_needs_approval()'}, ctx, tools['run_code'])
 
     async def test_model_retry_from_wrapped_tool_surfaces_as_model_retry(self) -> None:
         """A wrapped tool that raises ModelRetry gets double-wrapped through Monty but still retries.
@@ -1179,6 +1331,7 @@ class TestCodeMode:
     @pytest.mark.skipif(not logfire_installed, reason='logfire not installed')
     async def test_sandboxed_tool_calls_produce_otel_spans(self, capfire: CaptureLogfire) -> None:
         """Sandboxed tool calls dispatched through ToolManager produce OTel execute_tool spans."""
+        from pydantic_ai.capabilities import Instrumentation
         from pydantic_ai.messages import (
             ModelMessage,
             ModelResponse,
@@ -1199,8 +1352,7 @@ class TestCodeMode:
 
         agent: Agent[None, str] = Agent(
             FunctionModel(model_fn),
-            capabilities=[CodeMode[None]()],
-            instrument=InstrumentationSettings(include_content=True),
+            capabilities=[CodeMode[None](), Instrumentation(settings=InstrumentationSettings(include_content=True))],
         )
 
         @agent.tool_plain
@@ -1619,6 +1771,78 @@ class TestToolSearchIntegration:
         run_code_desc = tools['run_code'].tool_def.description
         assert run_code_desc is not None
         assert 'search_tools' not in run_code_desc
+
+    async def test_tool_search_toolset_deferred_tool_not_in_run_code(self) -> None:
+        """End-to-end: `FunctionToolset` + `ToolSearchToolset` + `CodeMode`, before discovery.
+
+        The deferred tool stays out of `run_code`'s description (progressive disclosure
+        preserved). `ToolSearchToolset` still emits it as a corpus member carrying
+        `defer_loading=True` / `with_native`, and `CodeMode` keeps it as a native
+        pass-through so those flags reach `Model.prepare_request` unaltered. `search_tools`
+        is native alongside `run_code`.
+        """
+        from pydantic_ai.toolsets._tool_search import _SEARCH_TOOLS_NAME, ToolSearchToolset
+
+        def later(x: int) -> str:
+            """A deferred-loading tool."""
+            return str(x)  # pragma: no cover - tool body is not invoked in this test
+
+        base = FunctionToolset[None](tools=[Tool(add), Tool(later, defer_loading=True)])
+        code_mode = CodeModeToolset(wrapped=ToolSearchToolset(wrapped=base), tool_selector='all')
+        tools = await code_mode.get_tools(build_run_context(None))
+
+        description = tools['run_code'].tool_def.description
+        assert description is not None
+        assert 'async def add' in description
+        # Not folded into run_code while undiscovered...
+        assert 'later' not in description
+        # ...but exposed as a native pass-through tool with its deferral intent intact.
+        assert 'later' in tools
+        assert tools['later'].tool_def.defer_loading is True
+        # search_tools is the discovery surface and stays native alongside run_code.
+        assert _SEARCH_TOOLS_NAME in tools
+        assert _TOOL_SEARCH_ADDENDUM.strip() in description
+
+    async def test_tool_search_toolset_discovered_tool_in_run_code(self) -> None:
+        """End-to-end: once `search_tools` has discovered the deferred tool, it folds into `run_code`."""
+        from pydantic_ai.messages import ModelRequest, ToolSearchReturnPart
+        from pydantic_ai.toolsets._tool_search import ToolSearchToolset
+
+        def later(x: int) -> str:
+            """A deferred-loading tool."""
+            return str(x)  # pragma: no cover - tool body is not invoked in this test
+
+        base = FunctionToolset[None](tools=[Tool(add), Tool(later, defer_loading=True)])
+        code_mode = CodeModeToolset(wrapped=ToolSearchToolset(wrapped=base), tool_selector='all')
+
+        ctx = RunContext[None](
+            deps=None,
+            model=TestModel(),
+            usage=RunUsage(),
+            prompt=None,
+            messages=[
+                ModelRequest(
+                    parts=[
+                        ToolSearchReturnPart(
+                            content={
+                                'discovered_tools': [{'name': 'later', 'description': 'A deferred-loading tool.'}]
+                            },
+                            tool_call_id='search-1',
+                        )
+                    ]
+                )
+            ],
+            run_step=1,
+        )
+        tools = await code_mode.get_tools(ctx)
+
+        description = tools['run_code'].tool_def.description
+        assert description is not None
+        assert 'async def add' in description
+        # Post-discovery the deferred tool comes back with `defer_loading=False`,
+        # so it folds into run_code and is no longer a separate native tool.
+        assert 'async def later' in description
+        assert 'later' not in tools
 
     def test_code_mode_ordering(self) -> None:
         """CodeMode declares ordering: outermost position, wraps ToolSearch."""

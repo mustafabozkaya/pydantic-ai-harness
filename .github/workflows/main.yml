@@ -71,6 +71,32 @@ jobs:
           path: coverage-data/.coverage.*
           include-hidden-files: true
 
+  # Verify the harness still works against the lowest direct-dep versions we claim
+  # compatibility with (the `>=` floors in pyproject.toml — including pydantic-ai-slim
+  # but also any other direct dep). The default `test` matrix above resolves against
+  # the lock (= latest published satisfying our constraints); this job exercises the
+  # entire claimed compatibility envelope. Mirrors pydantic-ai's `test-lowest-versions`
+  # job so the convention is consistent across the workspace.
+  #
+  # Bleeding-edge compat with pydantic-ai's main branch is verified by pydantic-ai's
+  # `harness compat` job (see https://github.com/pydantic/pydantic-ai/blob/main/.github/workflows/harness-compat.yml).
+  test-floor:
+    runs-on: ubuntu-latest
+    name: test on lowest direct-dep versions
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          python-version: '3.14'
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          cache-suffix: floor
+
+      - run: uv sync --resolution lowest-direct --group dev --all-extras
+      - run: uv run --no-sync pytest
+
   coverage:
     needs: [test]
     runs-on: ubuntu-latest
@@ -96,7 +122,7 @@ jobs:
 
   check:
     if: always()
-    needs: [lint, test, coverage]
+    needs: [lint, test, test-floor, coverage]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2

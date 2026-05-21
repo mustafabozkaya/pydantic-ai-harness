@@ -1,0 +1,94 @@
+name: Compat Test
+
+# Reusable workflow: install harness against an arbitrary pydantic-ai ref and run
+# the harness's lint, typecheck, and test suite. Called from pydantic-ai's CI to
+# verify that pydantic-ai PRs don't break the harness's contract before merge.
+#
+# Security: the called pydantic-ai ref may come from an untrusted fork PR, so
+# this workflow runs without secrets and only with `contents: read`. That keeps
+# fork PR exposure equivalent to pydantic-ai's regular `ci.yml` test jobs.
+#
+# **If you add steps that need elevated permissions or secrets** (Anthropic API
+# key, write tokens, deploy creds, anything posting to external services), the
+# caller (pydantic-ai's `harness-compat.yml`) needs to gate fork PRs at the
+# job level so untrusted code can't be triggered with the new privileges. The
+# original `safe-for-ci` label gate was removed once the workflow's scope was
+# stable at `contents: read` — adding it back is the standard pattern if scope
+# grows.
+
+on:
+  workflow_call:
+    inputs:
+      pydantic-ai-ref:
+        description: 'SHA, branch, or tag of pydantic-ai to test the harness against.'
+        type: string
+        required: true
+      pydantic-ai-repo:
+        description: 'Repository hosting the pydantic-ai ref. Pass the fork''s full_name when testing fork PRs.'
+        type: string
+        required: false
+        default: pydantic/pydantic-ai
+
+permissions:
+  contents: read
+
+# `UV_FROZEN=1` so the lock-resolved sync + the editable-overlay of pydantic-ai-slim /
+# pydantic-graph stays put when the subsequent `uv run ruff/pyright/pytest` calls fire.
+# Without this, `uv run` auto-re-resolves against PyPI ("Ignoring existing lockfile due
+# to change in resolution mode"), silently uninstalls the overlay, and ends up testing
+# harness main against whatever `pydantic-ai-slim` is on PyPI — i.e. the compat check
+# becomes a no-op against the actual pydantic-ai checkout we wanted to validate.
+env:
+  UV_FROZEN: '1'
+
+jobs:
+  compat:
+    name: harness vs pydantic-ai @ ${{ inputs.pydantic-ai-ref }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout harness (main)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: pydantic/pydantic-ai-harness
+          ref: main
+          persist-credentials: false
+
+      # Check out pydantic-ai into a workspace subdir, then move it OUTSIDE the
+      # harness tree (`actions/checkout` requires `path:` to live under
+      # `$GITHUB_WORKSPACE`, but tools that walk the harness tree — pyright,
+      # ruff, pytest collection — must not see the pydantic-ai checkout, or
+      # they'll surface thousands of unrelated findings from pydantic-ai's own
+      # `tests/`. `${{ runner.temp }}` lives outside workspace so it's invisible
+      # to those walkers.
+      - name: Checkout pydantic-ai @ ${{ inputs.pydantic-ai-ref }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ inputs.pydantic-ai-repo }}
+          ref: ${{ inputs.pydantic-ai-ref }}
+          path: _pydantic-ai-checkout
+          persist-credentials: false
+      - name: Move pydantic-ai outside the harness tree
+        run: mv _pydantic-ai-checkout "${RUNNER_TEMP}/pydantic-ai"
+
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        with:
+          python-version: '3.14'
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job has no write permissions and no secrets
+          cache-suffix: compat
+
+      # Install lock-resolved deps first, then override `pydantic-ai-slim` AND
+      # `pydantic-graph` with the local checkouts via `--no-deps`. Both are sibling
+      # packages in the pydantic-ai repo and version-track together; testing slim
+      # from-source against a stale graph from PyPI would mask cross-package issues
+      # (e.g. a slim PR depending on an unreleased graph change).
+      - run: uv sync --frozen --all-extras --group lint --group dev
+      - run: |
+          uv pip install --no-deps \
+            -e "${RUNNER_TEMP}/pydantic-ai/pydantic_ai_slim" \
+            -e "${RUNNER_TEMP}/pydantic-ai/pydantic_graph"
+
+      - run: uv run ruff format --check
+      - run: uv run ruff check
+      - run: uv run pyright
+      - run: uv run pytest
