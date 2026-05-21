@@ -6,8 +6,12 @@ import asyncio
 from typing import Any
 
 import pytest
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import NoOpTracer, Tracer
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import SkipModelRequest
+from pydantic_ai.exceptions import SkipModelRequest, UserError
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -31,12 +35,25 @@ def anyio_backend() -> str:
     return 'asyncio'
 
 
+def _recording_tracer() -> tuple[Tracer, InMemorySpanExporter]:
+    """A real OTel tracer that records finished spans into an in-memory exporter."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return provider.get_tracer('test'), exporter
+
+
 def _build_ctx_and_req(
     run_step: int = 1,
     prompt: str | None = 'hello world',
+    *,
+    messages: list[ModelMessage] | None = None,
+    trace_include_content: bool = False,
+    tracer: Tracer | None = None,
 ) -> tuple[RunContext[None], ModelRequestContext]:
     model = TestModel()
-    messages: list[ModelMessage] = [ModelRequest(parts=[UserPromptPart(content=prompt)])] if prompt is not None else []
+    if messages is None:
+        messages = [ModelRequest(parts=[UserPromptPart(content=prompt)])] if prompt is not None else []
     req_ctx = ModelRequestContext(
         model=model,
         messages=messages,
@@ -50,8 +67,19 @@ def _build_ctx_and_req(
         prompt=prompt,
         messages=messages,
         run_step=run_step,
+        trace_include_content=trace_include_content,
+        tracer=tracer if tracer is not None else NoOpTracer(),
     )
     return run_ctx, req_ctx
+
+
+def _prompt_text(messages: list[ModelMessage]) -> str | None:
+    """Return the text of the first user prompt in `messages`."""
+    for message in messages:
+        for part in message.parts:
+            if isinstance(part, UserPromptPart) and isinstance(part.content, str):
+                return part.content
+    return None
 
 
 class TestInputGuard:
@@ -70,6 +98,13 @@ class TestInputGuard:
         assert result.output == 'ok'
         assert calls == ['hello']
 
+    async def test_guard_result_allow(self):
+        agent = Agent(
+            TestModel(custom_output_text='ok'),
+            capabilities=[InputGuard[None](guard=lambda _: GuardResult.allow())],
+        )
+        assert (await agent.run('hello')).output == 'ok'
+
     async def test_block_uses_default_message(self):
         agent = Agent(
             TestModel(custom_output_text='would be model output'),
@@ -79,14 +114,19 @@ class TestInputGuard:
 
         assert result.output == 'Request blocked by input guardrail.'
 
-    async def test_guard_result_without_message_uses_default(self):
+    async def test_block_with_custom_message(self):
         agent = Agent(
             TestModel(custom_output_text='would be model output'),
-            capabilities=[InputGuard[None](guard=lambda _: GuardResult(safe=False))],
+            capabilities=[InputGuard[None](guard=lambda _: GuardResult.block('nope'))],
         )
-        result = await agent.run('hello')
+        assert (await agent.run('hello')).output == 'nope'
 
-        assert result.output == 'Request blocked by input guardrail.'
+    async def test_block_without_message_uses_default(self):
+        agent = Agent(
+            TestModel(custom_output_text='would be model output'),
+            capabilities=[InputGuard[None](guard=lambda _: GuardResult.block())],
+        )
+        assert (await agent.run('hello')).output == 'Request blocked by input guardrail.'
 
     async def test_async_guard_awaited(self):
         async def guard(prompt: str) -> bool:
@@ -106,18 +146,6 @@ class TestInputGuard:
         with pytest.raises(InputBlocked, match='policy violation'):
             await agent.run('anything')
 
-    async def test_guard_result_message_reflects_prompt(self):
-        def guard(prompt: str) -> GuardResult:
-            return GuardResult(safe=False, message=f'blocked: {prompt}')
-
-        agent = Agent(
-            TestModel(custom_output_text='would be model output'),
-            capabilities=[InputGuard[None](guard=guard)],
-        )
-        result = await agent.run('secret stuff')
-
-        assert result.output == 'blocked: secret stuff'
-
     async def test_guard_receives_run_context(self):
         seen: list[object] = []
 
@@ -131,7 +159,84 @@ class TestInputGuard:
         assert result.output == 'ok'
         assert seen == ['hello']
 
-    async def test_sequential_runs_guard_then_handler(self):
+    async def test_retry_action_is_a_usage_error(self):
+        agent = Agent(
+            TestModel(custom_output_text='ok'),
+            capabilities=[InputGuard[None](guard=lambda _: GuardResult.retry('redo'))],
+        )
+        with pytest.raises(UserError, match='cannot return GuardResult.retry'):
+            await agent.run('hello')
+
+    async def test_runs_once_across_tool_loop(self):
+        """End-to-end: guard fires once even when the model makes multiple tool calls."""
+        calls: list[str] = []
+
+        def guard(prompt: str) -> bool:
+            calls.append(prompt)
+            return True
+
+        model = TestModel(call_tools='all', custom_output_text='done')
+        agent = Agent(model, capabilities=[InputGuard[None](guard=guard)])
+
+        @agent.tool_plain
+        def ping() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'pong'
+
+        result = await agent.run('hello')
+        assert result.output == 'done'
+        assert calls == ['hello']
+
+
+class TestInputGuardRedaction:
+    """Tests for `GuardResult.replace()` rewriting the prompt sent to the model."""
+
+    async def test_replace_rewrites_prompt_for_handler(self):
+        run_ctx, req_ctx = _build_ctx_and_req()
+        sentinel = ModelResponse(parts=[TextPart(content='direct')])
+        seen: list[str | None] = []
+
+        async def handler(received: ModelRequestContext) -> ModelResponse:
+            seen.append(_prompt_text(received.messages))
+            return sentinel
+
+        ig = InputGuard[None](guard=lambda _: GuardResult.replace('[redacted]'))
+        out = await ig.wrap_model_request(run_ctx, request_context=req_ctx, handler=handler)
+
+        assert out is sentinel
+        assert seen == ['[redacted]']
+        assert _prompt_text(req_ctx.messages) == '[redacted]'
+
+    async def test_replace_via_agent_run(self):
+        def guard(prompt: str) -> GuardResult:
+            return GuardResult.replace(prompt.replace('secret', '***'))
+
+        agent = Agent(TestModel(custom_output_text='ok'), capabilities=[InputGuard[None](guard=guard)])
+        result = await agent.run('my secret value')
+
+        assert result.output == 'ok'
+        assert _prompt_text(list(result.all_messages())) == 'my *** value'
+
+    async def test_replace_with_non_str_is_a_usage_error(self):
+        agent = Agent(
+            TestModel(custom_output_text='ok'),
+            capabilities=[InputGuard[None](guard=lambda _: GuardResult.replace(123))],
+        )
+        with pytest.raises(UserError, match='must provide replacement prompt text'):
+            await agent.run('hello')
+
+    async def test_replace_without_a_user_prompt_is_a_usage_error(self):
+        # `ctx.prompt` is set so the guard runs, but the request carries no `UserPromptPart`.
+        run_ctx, req_ctx = _build_ctx_and_req(messages=[ModelResponse(parts=[TextPart(content='no user prompt here')])])
+
+        ig = InputGuard[None](guard=lambda _: GuardResult.replace('[redacted]'))
+        with pytest.raises(UserError, match='could not find a user prompt'):
+            await ig.wrap_model_request(run_ctx, request_context=req_ctx, handler=_unreachable_handler)
+
+
+class TestInputGuardSequential:
+    """Direct `wrap_model_request` tests for sequential mode."""
+
+    async def test_runs_guard_then_handler(self):
         run_ctx, req_ctx = _build_ctx_and_req()
         sentinel = ModelResponse(parts=[TextPart(content='direct')])
         calls: list[str] = []
@@ -148,13 +253,12 @@ class TestInputGuard:
         assert out is sentinel
         assert calls == ['hello world']
 
-    async def test_sequential_skipped_when_prompt_missing(self):
+    async def test_skipped_when_prompt_missing(self):
         run_ctx, req_ctx = _build_ctx_and_req(prompt=None)
         sentinel = ModelResponse(parts=[TextPart(content='direct')])
-
         called: list[str] = []
 
-        def guard(prompt: str) -> bool:  # pragma: no cover — should not be called
+        def guard(prompt: str) -> bool:  # pragma: no cover - should not be called
             called.append(prompt)
             return True
 
@@ -166,35 +270,12 @@ class TestInputGuard:
         assert out is sentinel
         assert called == []
 
-    async def test_runs_once_across_tool_loop(self):
-        """End-to-end: guard fires once even when the model makes multiple tool calls."""
-        calls: list[str] = []
-
-        def guard(prompt: str) -> bool:
-            calls.append(prompt)
-            return True
-
-        # TestModel(call_tools='all') calls each tool once, then returns text — two model
-        # requests total.
-        model = TestModel(call_tools='all', custom_output_text='done')
-        agent = Agent(model, capabilities=[InputGuard[None](guard=guard)])
-
-        @agent.tool_plain
-        def ping() -> str:  # pyright: ignore[reportUnusedFunction]
-            return 'pong'
-
-        result = await agent.run('hello')
-        assert result.output == 'done'
-        assert calls == ['hello']
-
-    async def test_sequential_skips_guard_on_subsequent_steps(self):
-        """After the first model request, the guard must not re-run."""
+    async def test_skips_guard_on_subsequent_steps(self):
         run_ctx, req_ctx = _build_ctx_and_req(run_step=2)
         sentinel = ModelResponse(parts=[TextPart(content='direct')])
-
         called: list[str] = []
 
-        def guard(prompt: str) -> bool:  # pragma: no cover — should not be called after step 1
+        def guard(prompt: str) -> bool:  # pragma: no cover - should not be called after step 1
             called.append(prompt)
             return False
 
@@ -237,7 +318,7 @@ class TestInputGuardParallel:
 
         async def guard(_: str) -> GuardResult:
             await handler_started.wait()
-            return GuardResult(safe=False, message='blocked!')
+            return GuardResult.block('blocked!')
 
         ig = InputGuard[None](guard=guard, parallel=True)
         with pytest.raises(SkipModelRequest) as exc_info:
@@ -285,7 +366,7 @@ class TestInputGuardParallel:
         assert await task is sentinel
 
     async def test_handler_finishes_then_guard_trips(self):
-        """Handler returns first, then the guard trips — `SkipModelRequest` still wins."""
+        """Handler returns first, then the guard trips - `SkipModelRequest` still wins."""
         run_ctx, req_ctx = _build_ctx_and_req()
         release_guard = asyncio.Event()
 
@@ -294,7 +375,7 @@ class TestInputGuardParallel:
 
         async def slow_guard(_: str) -> GuardResult:
             await release_guard.wait()
-            return GuardResult(safe=False, message='late trip')
+            return GuardResult.block('late trip')
 
         async def runner() -> ModelResponse:
             ig = InputGuard[None](guard=slow_guard, parallel=True)
@@ -333,10 +414,9 @@ class TestInputGuardParallel:
     async def test_skipped_when_prompt_missing(self):
         run_ctx, req_ctx = _build_ctx_and_req(prompt=None)
         sentinel = ModelResponse(parts=[TextPart(content='direct')])
-
         called: list[str] = []
 
-        def guard(prompt: str) -> bool:  # pragma: no cover — should never be called
+        def guard(prompt: str) -> bool:  # pragma: no cover - should never be called
             called.append(prompt)
             return False
 
@@ -349,12 +429,11 @@ class TestInputGuardParallel:
         assert called == []
 
     async def test_skips_guard_on_subsequent_steps(self):
-        """`wrap_model_request` must pass the handler through without running the guard past step 1."""
         run_ctx, req_ctx = _build_ctx_and_req(run_step=2)
         sentinel = ModelResponse(parts=[TextPart(content='direct')])
         called: list[str] = []
 
-        def guard(prompt: str) -> bool:  # pragma: no cover — should not be called after step 1
+        def guard(prompt: str) -> bool:  # pragma: no cover - should not be called after step 1
             called.append(prompt)
             return False
 
@@ -366,14 +445,18 @@ class TestInputGuardParallel:
         assert out is sentinel
         assert called == []
 
-    async def test_no_dangling_tasks_when_handler_raises(self):
-        """`finally` must drain cancelled tasks so they don't outlive the call.
+    async def test_replace_under_parallel_is_a_usage_error(self):
+        run_ctx, req_ctx = _build_ctx_and_req()
 
-        `task.cancel()` only schedules a `CancelledError` for the next loop tick — without
-        awaiting, the task stays in `asyncio.all_tasks()` after `wrap_model_request`
-        returns, leaks into the surrounding scope, and produces "Task exception was never
-        retrieved" warnings if it later raises.
-        """
+        async def handler(_: Any) -> ModelResponse:
+            return ModelResponse(parts=[TextPart(content='from handler')])
+
+        ig = InputGuard[None](guard=lambda _: GuardResult.replace('[redacted]'), parallel=True)
+        with pytest.raises(UserError, match='incompatible with GuardResult.replace'):
+            await ig.wrap_model_request(run_ctx, request_context=req_ctx, handler=handler)
+
+    async def test_no_dangling_tasks_when_handler_raises(self):
+        """`finally` must drain cancelled tasks so they don't outlive the call."""
         run_ctx, req_ctx = _build_ctx_and_req()
 
         async def failing_handler(_: Any) -> ModelResponse:
@@ -394,12 +477,57 @@ class TestInputGuardParallel:
         assert leftover == set(), f'guard/handler tasks must be drained, got dangling: {leftover}'
 
 
+class TestInputGuardTracing:
+    """Spans emitted on block and redaction."""
+
+    async def test_block_emits_span(self):
+        tracer, exporter = _recording_tracer()
+        run_ctx, req_ctx = _build_ctx_and_req(tracer=tracer)
+
+        ig = InputGuard[None](guard=lambda _: GuardResult.block('nope'))
+        with pytest.raises(SkipModelRequest):
+            await ig.wrap_model_request(run_ctx, request_context=req_ctx, handler=_unreachable_handler)
+
+        span = _only_span(exporter)
+        assert span.name == 'guardrail blocked input'
+        assert dict(span.attributes or {}) == {
+            'guardrail.direction': 'input',
+            'guardrail.action': 'block',
+            'guardrail.message': 'nope',
+        }
+
+    async def test_redaction_span_includes_content_when_enabled(self):
+        tracer, exporter = _recording_tracer()
+        run_ctx, req_ctx = _build_ctx_and_req(tracer=tracer, trace_include_content=True)
+
+        ig = InputGuard[None](guard=lambda _: GuardResult.replace('[redacted]'))
+        await ig.wrap_model_request(run_ctx, request_context=req_ctx, handler=_sentinel_handler)
+
+        span = _only_span(exporter)
+        assert span.name == 'guardrail redacted input'
+        assert dict(span.attributes or {}) == {
+            'guardrail.direction': 'input',
+            'guardrail.action': 'replace',
+            'guardrail.original': 'hello world',
+            'guardrail.replacement': '[redacted]',
+        }
+
+    async def test_redaction_span_omits_content_by_default(self):
+        tracer, exporter = _recording_tracer()
+        run_ctx, req_ctx = _build_ctx_and_req(tracer=tracer)
+
+        ig = InputGuard[None](guard=lambda _: GuardResult.replace('[redacted]'))
+        await ig.wrap_model_request(run_ctx, request_context=req_ctx, handler=_sentinel_handler)
+
+        span = _only_span(exporter)
+        assert span.name == 'guardrail redacted input'
+        assert dict(span.attributes or {}) == {'guardrail.direction': 'input', 'guardrail.action': 'replace'}
+
+
 class TestExtractPrompt:
     """Unit tests for the `_extract_prompt` helper."""
 
     def test_from_messages(self):
-        """Extraction falls back to the most recent `UserPromptPart`."""
-
         class _Ctx:
             prompt = None
 
@@ -424,10 +552,22 @@ class TestExtractPrompt:
         assert _extract_prompt(_Ctx(), messages) == str(['multi'])  # pyright: ignore[reportArgumentType]
 
     def test_returns_none_when_no_user_prompt_part(self):
-        """A history containing only model responses yields `None`."""
-
         class _Ctx:
             prompt = None
 
         messages: list[ModelMessage] = [ModelResponse(parts=[TextPart(content='only model parts here')])]
         assert _extract_prompt(_Ctx(), messages) is None  # pyright: ignore[reportArgumentType]
+
+
+async def _unreachable_handler(_: ModelRequestContext) -> ModelResponse:  # pragma: no cover - never awaited
+    raise AssertionError('handler should not be called')
+
+
+async def _sentinel_handler(_: ModelRequestContext) -> ModelResponse:
+    return ModelResponse(parts=[TextPart(content='ok')])
+
+
+def _only_span(exporter: InMemorySpanExporter) -> ReadableSpan:
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1, f'expected exactly one span, got {[s.name for s in spans]}'
+    return spans[0]
