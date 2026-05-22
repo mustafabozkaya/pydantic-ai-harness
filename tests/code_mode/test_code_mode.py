@@ -58,6 +58,8 @@ def build_run_context(deps: T, run_step: int = 0) -> RunContext[T]:
         prompt=None,
         messages=[],
         run_step=run_step,
+        # A live queue so `ctx.enqueue` works in tests; a real run wires this to the run's queue.
+        pending_messages=[],
     )
 
 
@@ -2019,6 +2021,7 @@ class TestDynamicCatalog:
             result={'discovered_tools': [{'name': 'weather', 'description': '...'}]},
         )
 
+        assert ctx.pending_messages is not None
         assert len(ctx.pending_messages) == 1
         [request] = ctx.pending_messages[0].messages
         assert isinstance(request, ModelRequest)
@@ -2087,6 +2090,7 @@ class TestDynamicCatalog:
                 result=result,
             )
         # Only the first discovery of `weather` announces.
+        assert ctx.pending_messages is not None
         assert len(ctx.pending_messages) == 1
 
     # -- discovery announcement: native search path -----------------------
@@ -2109,6 +2113,7 @@ class TestDynamicCatalog:
         )
         await cap.after_model_request(ctx, request_context=None, response=response)  # pyright: ignore[reportArgumentType]
 
+        assert ctx.pending_messages is not None
         assert len(ctx.pending_messages) == 1
         [request] = ctx.pending_messages[0].messages
         assert isinstance(request, ModelRequest)
