@@ -43,16 +43,22 @@ librarian = Agent(
 await librarian.run('Find ThinkingPartDelta and confirm the callable allowance')
 ```
 
-That is the whole setup. The capability materialises a `run_id` per
-`Agent.run` automatically:
+That is the whole setup. `run_id` resolution per `Agent.run`:
 
-- explicit `run_id='libr-1'` → used as-is (deterministic identity).
-- `agent_name` set, `run_id` unset → `'{agent_name}-{8-char-hex}'`
-  (e.g. `code_librarian-a3b2`).
-- neither set → pydantic_ai's `ctx.run_id` (falling back to UUID4).
+- **Explicit `run_id='libr-1'`** → used as-is. *Shared across every `.run()`
+  call on this capability instance* — that is the orchestrator pattern,
+  where the caller owns one logical identity across many turns. Pick a
+  unique value yourself when you want per-turn separation.
+- **`agent_name` set, `run_id` unset** → `'{agent_name}-{8-char-hex}'`,
+  freshly materialised in `for_run` per `.run()` call. Reusing the
+  capability instance across runs yields distinct ids
+  (`code_librarian-a3b2`, `code_librarian-c9d1`, …).
+- **Neither set** → `ctx.run_id` (pydantic_ai's auto-generated id) per
+  `.run()` call, falling back to a UUID4.
 
-Reusing one `StepPersistence` instance across multiple `Agent.run` calls
-does **not** silently merge them — each call materialises a fresh id.
+Use the auto-derived form for one-shot or fan-out delegate runs. Use the
+explicit form when an orchestrator continues a single logical run across
+multiple `.run()` calls.
 
 ## Three-level identity
 
@@ -82,16 +88,19 @@ exposes one helper that loads the most recent provider-valid snapshot:
 ```python
 from pydantic_ai_harness import continue_run
 
-# Earlier:
-await librarian.run('Find ThinkingPartDelta and confirm the callable allowance')
+# Earlier: tag the first turn with a conversation id so the follow-up can find it.
+await librarian.run(
+    'Find ThinkingPartDelta and confirm the callable allowance',
+    conversation_id='libr-conv',
+)
 
 # Later (possibly a different process):
-prior_run = (await store.list_runs(conversation_id='conv-abc'))[-1].run_id
+prior_run = (await store.list_runs(conversation_id='libr-conv'))[-1].run_id
 history = await continue_run(store, run_id=prior_run)
 await librarian.run(
     'Read _apply_provider_details_delta and check the path',
     message_history=history,
-    conversation_id='conv-abc',   # preserve the conversation grouping
+    conversation_id='libr-conv',   # keep the conversation grouping
 )
 ```
 
@@ -140,7 +149,11 @@ async def ask_librarian(question: str) -> str:
     result = await librarian.run(question)   # parent_run_id auto-filled
     return result.output
 
-await orchestrator.run('Where is ThinkingPartDelta defined?')
+# Tag the orchestrator turn so the lookup below can find its run_id.
+await orchestrator.run(
+    'Where is ThinkingPartDelta defined?',
+    conversation_id='orch-conv',
+)
 
 # All librarian runs now point at the orchestrator's run_id:
 orch_run_id = (await store.list_runs(conversation_id='orch-conv'))[-1].run_id

@@ -79,13 +79,17 @@ class StepPersistence(AbstractCapability[AgentDepsT]):
 
     Resolution order (materialised once per `Agent.run` via `for_run`):
 
-    1. Explicit value → used as-is.
-    2. `agent_name` set, `run_id` unset → `{agent_name}-{short-uuid}`.
-    3. Neither set → `ctx.run_id` (pydantic_ai's auto-generated id),
-       falling back to a fresh UUID4.
+    1. **Explicit value** → used as-is. *Shared across every `.run()` call*
+       on this capability instance — caller owns uniqueness. This is the
+       orchestrator pattern where one logical identity spans many turns.
+    2. **`agent_name` set, `run_id` unset** → `{agent_name}-{short-uuid}`,
+       freshly materialised in `for_run` per `.run()`. Reusing the
+       capability instance yields distinct ids.
+    3. **Neither set** → `ctx.run_id` (pydantic_ai's auto-generated id)
+       per `.run()`, falling back to a fresh UUID4.
 
-    Reusing the same capability instance across `Agent.run` calls does NOT
-    silently share the id — each call materialises a fresh one.
+    Pick (1) when you want deterministic per-orchestrator identity; pick
+    (2) for per-call uniqueness with readable ids; (3) is the bare default.
     """
 
     parent_run_id: str | None = None
