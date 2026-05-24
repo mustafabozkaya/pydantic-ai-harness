@@ -300,8 +300,13 @@ class FileStepStore:
         events.jsonl
         tool_effects.jsonl
         snapshots/
-          <step_index>.json
+          <seq>.json
     ```
+
+    Snapshot filenames are a per-run monotonic counter assigned at write
+    time (see `_next_snapshot_seq`), not `step_index` — `ctx.run_step`
+    resets each `Agent.run` so a reused `run_id` would otherwise clash.
+    The actual `step_index` is preserved as a field inside the JSON.
 
     `run_id` is validated against `[A-Za-z0-9_.-]{1,200}` (with `..` rejected)
     to prevent path traversal. Blocking I/O is dispatched to a worker thread
