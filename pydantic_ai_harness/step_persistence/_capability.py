@@ -133,6 +133,14 @@ class StepPersistence(AbstractCapability[AgentDepsT]):
         Reads the contextvar set by any enclosing `StepPersistence.wrap_run`
         before the local run overwrites it, so a delegate's `parent_run_id`
         ends up pointing at its orchestrator's `run_id`.
+
+        A separate `ContextVar` is needed because pydantic_ai's own
+        cross-run signals (`RUN_ID_BAGGAGE_KEY` via OTel baggage,
+        `RunContext.run_id`, and `_CURRENT_RUN_CONTEXT`) are single-slot:
+        the inner `Instrumentation.wrap_run` overwrites them before any
+        nested capability sees the parent. The harness-local contextvar
+        lets us snapshot the parent here, *before* the local `wrap_run`
+        rebinds it.
         """
         inferred_parent = self.parent_run_id if self.parent_run_id is not None else current_run_id.get()
         resolved_run_id = self.run_id or self._derive_run_id(ctx)
