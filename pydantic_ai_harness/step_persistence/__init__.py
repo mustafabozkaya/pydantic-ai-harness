@@ -2,6 +2,7 @@
 
 from pydantic_ai_harness.step_persistence._capability import StepPersistence
 from pydantic_ai_harness.step_persistence._helpers import (
+    annotate_tool_effect,
     continue_run,
     fork_run,
     is_provider_valid,
@@ -31,6 +32,7 @@ __all__ = [
     'StepStore',
     'ToolEffectRecord',
     'ToolEffectStatus',
+    'annotate_tool_effect',
     'continue_run',
     'fork_run',
     'is_provider_valid',

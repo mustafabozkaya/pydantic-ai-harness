@@ -1094,3 +1094,146 @@ class TestCapabilityHookBranches:
         record = await store.get_run(run_id='r1')
         assert record is not None
         assert record.metadata == {}
+
+
+# ---------------------------------------------------------------------------
+# Round-2 review fixes (RetryPromptPart, list_runs ordering, effect metadata,
+# from_spec validation, annotate_tool_effect)
+# ---------------------------------------------------------------------------
+
+
+class TestNonToolRetryPrompt:
+    def test_non_tool_retry_prompt_is_valid(self) -> None:
+        """`RetryPromptPart(tool_name=None)` is an output-validation retry, not a tool result."""
+        messages: list[ModelMessage] = [
+            ModelRequest(parts=[UserPromptPart(content='hi')]),
+            ModelResponse(parts=[TextPart(content='wrong shape')]),
+            ModelRequest(parts=[RetryPromptPart(content='try again', tool_name=None)]),
+        ]
+        assert is_provider_valid(messages) is True
+
+    def test_tool_retry_prompt_still_needs_open_call(self) -> None:
+        """`RetryPromptPart(tool_name=...)` still requires a matching open `ToolCallPart`."""
+        messages: list[ModelMessage] = [
+            ModelRequest(parts=[RetryPromptPart(content='retry', tool_name='add', tool_call_id='ghost')]),
+        ]
+        assert is_provider_valid(messages) is False
+
+
+class TestListRunsChronologicalOrdering:
+    async def test_in_memory_returns_started_at_order(self) -> None:
+        """`InMemoryStepStore.list_runs` sorts by `started_at`, not insertion order."""
+        from datetime import datetime, timezone
+
+        store = InMemoryStepStore()
+        await store.register_run(RunRecord(run_id='z-newer', started_at=datetime(2026, 5, 24, 12, tzinfo=timezone.utc)))
+        await store.register_run(RunRecord(run_id='a-older', started_at=datetime(2026, 5, 24, 10, tzinfo=timezone.utc)))
+        runs = await store.list_runs()
+        assert [r.run_id for r in runs] == ['a-older', 'z-newer']
+
+    async def test_file_store_returns_started_at_order(self, tmp_path: Path) -> None:
+        """`FileStepStore.list_runs` sorts by `started_at`, not by directory name."""
+        from datetime import datetime, timezone
+
+        store = FileStepStore(tmp_path)
+        # `a-new` is lexicographically first but chronologically last.
+        await store.register_run(RunRecord(run_id='z-old', started_at=datetime(2026, 5, 24, 10, tzinfo=timezone.utc)))
+        await store.register_run(RunRecord(run_id='a-new', started_at=datetime(2026, 5, 24, 12, tzinfo=timezone.utc)))
+        runs = await store.list_runs()
+        assert [r.run_id for r in runs] == ['z-old', 'a-new']
+
+
+class TestToolEffectMetadataPreservation:
+    async def test_completed_preserves_idempotency_key_and_effect_summary(self) -> None:
+        """Metadata written during the tool call survives the terminal `completed` record."""
+        from pydantic_ai_harness import annotate_tool_effect
+
+        store = InMemoryStepStore()
+        agent: Agent[None, str] = Agent(TestModel(), capabilities=[StepPersistence(store=store, run_id='r1')])
+
+        @agent.tool
+        async def write_label(ctx: RunContext[None], label: str) -> str:  # pyright: ignore[reportUnusedFunction]
+            await annotate_tool_effect(
+                store,
+                ctx,
+                idempotency_key=f'label::{label}',
+                effect_summary=f'set label to {label}',
+            )
+            return f'wrote {label}'
+
+        await agent.run('apply a label please')
+
+        effect = await store.get_tool_effect(run_id='r1', tool_call_id='pyd_ai_tool_call_id__write_label')
+        assert effect is not None
+        assert effect.status == 'completed'
+        assert effect.idempotency_key is not None and effect.idempotency_key.startswith('label::')
+        assert effect.effect_summary is not None and 'set label to' in effect.effect_summary
+
+    async def test_failed_preserves_idempotency_key(self) -> None:
+        """Metadata written before a tool raises still appears on the `failed` record."""
+        from pydantic_ai_harness import annotate_tool_effect
+
+        store = InMemoryStepStore()
+        agent: Agent[None, str] = Agent(TestModel(), capabilities=[StepPersistence(store=store, run_id='r1')])
+
+        @agent.tool
+        async def boom(ctx: RunContext[None]) -> int:  # pyright: ignore[reportUnusedFunction]
+            await annotate_tool_effect(store, ctx, idempotency_key='boom-key')
+            raise ValueError('kaboom')
+
+        with pytest.raises(ValueError, match='kaboom'):
+            await agent.run('please boom')
+
+        effect = await store.get_tool_effect(run_id='r1', tool_call_id='pyd_ai_tool_call_id__boom')
+        assert effect is not None
+        assert effect.status == 'failed'
+        assert effect.idempotency_key == 'boom-key'
+        # default summary still records the error when no summary was annotated:
+        assert effect.effect_summary is not None and 'kaboom' in effect.effect_summary
+
+    async def test_annotate_tool_effect_outside_step_persistence_is_a_noop(self) -> None:
+        """No `current_run_id` → `annotate_tool_effect` returns without writing."""
+        from pydantic_ai_harness import annotate_tool_effect
+
+        store = InMemoryStepStore()
+        ctx = build_run_context(deps=None, run_id='r1')
+        # No StepPersistence active and ctx.tool_call_id is None.
+        await annotate_tool_effect(store, ctx, idempotency_key='ignored')
+        assert await store.get_tool_effect(run_id='r1', tool_call_id='whatever') is None
+
+    async def test_annotate_tool_effect_noop_when_prior_record_missing(self) -> None:
+        """`current_run_id` set + ctx tool fields set, but no prior record → no-op."""
+        from pydantic_ai_harness import annotate_tool_effect
+        from pydantic_ai_harness.step_persistence._context import current_run_id
+
+        store = InMemoryStepStore()
+        ctx = RunContext[Any](
+            deps=None,
+            model=TestModel(),
+            usage=RunUsage(),
+            prompt=None,
+            messages=[],
+            run_step=0,
+            run_id='r1',
+            tool_call_id='tc-1',
+            tool_name='write_label',
+        )
+        token = current_run_id.set('r1')
+        try:
+            await annotate_tool_effect(store, ctx, idempotency_key='label::x')
+        finally:
+            current_run_id.reset(token)
+        # `before_tool_execute` hasn't fired, so the prior record doesn't exist.
+        # The helper returns without inventing one.
+        assert await store.get_tool_effect(run_id='r1', tool_call_id='tc-1') is None
+
+
+class TestFromSpecBackendValidation:
+    def test_unknown_backend_raises(self) -> None:
+        """A typo like `backend='disk'` raises instead of silently using memory."""
+        with pytest.raises(ValueError, match='unknown backend'):
+            StepPersistence.from_spec(backend='disk')
+
+    def test_memory_backend_still_works(self) -> None:
+        cap: StepPersistence[Any] = StepPersistence.from_spec(backend='memory')
+        assert isinstance(cap.store, InMemoryStepStore)

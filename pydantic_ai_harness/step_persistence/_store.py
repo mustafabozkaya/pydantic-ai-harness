@@ -70,7 +70,14 @@ class StepStore(Protocol):
         *,
         parent_run_id: str | None = None,
         conversation_id: str | None = None,
-    ) -> list[RunRecord]: ...  # pragma: no cover
+    ) -> list[RunRecord]:
+        """Return matching `RunRecord`s sorted by `started_at` ascending.
+
+        Both filters are optional and AND-combine when both are set. The
+        chronological ordering is part of the protocol — callers may pick
+        the most recent run with `[-1]`.
+        """
+        ...  # pragma: no cover
 
     async def append_event(self, event: StepEvent) -> None: ...  # pragma: no cover
 
@@ -110,12 +117,13 @@ class InMemoryStepStore:
         parent_run_id: str | None = None,
         conversation_id: str | None = None,
     ) -> list[RunRecord]:
-        return [
+        records = [
             r
             for r in self._runs.values()
             if (parent_run_id is None or r.parent_run_id == parent_run_id)
             and (conversation_id is None or r.conversation_id == conversation_id)
         ]
+        return sorted(records, key=lambda r: r.started_at)
 
     async def append_event(self, event: StepEvent) -> None:
         self._events[event.run_id].append(event)
@@ -341,7 +349,7 @@ class FileStepStore:
         if not self._root.exists():
             return []
         records: list[RunRecord] = []
-        for sub in sorted(self._root.iterdir()):
+        for sub in self._root.iterdir():
             run_file = sub / 'run.json'
             if not run_file.exists():
                 continue
@@ -351,7 +359,7 @@ class FileStepStore:
             if conversation_id is not None and record.conversation_id != conversation_id:
                 continue
             records.append(record)
-        return records
+        return sorted(records, key=lambda r: r.started_at)
 
     async def append_event(self, event: StepEvent) -> None:
         await anyio.to_thread.run_sync(self._sync_append_event, event)

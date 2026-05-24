@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
@@ -16,6 +15,7 @@ from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.run import AgentRunResult
 from pydantic_ai.tools import AgentDepsT, RunContext, ToolDefinition
 
+from pydantic_ai_harness.step_persistence._context import current_run_id
 from pydantic_ai_harness.step_persistence._helpers import is_provider_valid
 from pydantic_ai_harness.step_persistence._store import InMemoryStepStore, StepStore
 from pydantic_ai_harness.step_persistence._types import (
@@ -29,18 +29,6 @@ from pydantic_ai_harness.step_persistence._types import (
 
 def _empty_metadata() -> dict[str, str]:
     return {}
-
-
-_current_run_id: ContextVar[str | None] = ContextVar(
-    'pydantic_ai_harness.step_persistence.current_run_id', default=None
-)
-"""Async-context-local pointer to the currently-active StepPersistence `run_id`.
-
-Set in `wrap_run` and read in `for_run` of a nested capability so an
-orchestrator's tool that synchronously invokes `Agent.run(...)` on a
-delegate auto-fills the delegate's `parent_run_id` — no manual threading
-required for in-process delegation.
-"""
 
 
 @dataclass
@@ -118,14 +106,18 @@ class StepPersistence(AbstractCapability[AgentDepsT]):
         """Construct from a serialised spec.
 
         Supports `backend='memory'` (default) or `backend='file'` with `directory`.
+        Raises `ValueError` for any other `backend` value — silently falling
+        back to in-memory storage would turn a typo into accidental non-durability.
         """
         backend = kwargs.pop('backend', 'memory')
+        if backend == 'memory':
+            return cls(store=InMemoryStepStore(), **kwargs)
         if backend == 'file':
             from pydantic_ai_harness.step_persistence._store import FileStepStore
 
             directory = kwargs.pop('directory', '.step-persistence')
             return cls(store=FileStepStore(directory), **kwargs)
-        return cls(store=InMemoryStepStore(), **kwargs)
+        raise ValueError(f'unknown backend {backend!r}; expected `memory` or `file`')
 
     async def for_run(self, ctx: RunContext[AgentDepsT]) -> AbstractCapability[AgentDepsT]:
         """Materialise `run_id` and `parent_run_id` for this `Agent.run` call.
@@ -134,7 +126,7 @@ class StepPersistence(AbstractCapability[AgentDepsT]):
         before the local run overwrites it, so a delegate's `parent_run_id`
         ends up pointing at its orchestrator's `run_id`.
         """
-        inferred_parent = self.parent_run_id if self.parent_run_id is not None else _current_run_id.get()
+        inferred_parent = self.parent_run_id if self.parent_run_id is not None else current_run_id.get()
         resolved_run_id = self.run_id or self._derive_run_id(ctx)
         if resolved_run_id == self.run_id and inferred_parent == self.parent_run_id:
             return self
@@ -179,11 +171,11 @@ class StepPersistence(AbstractCapability[AgentDepsT]):
         handler: WrapRunHandler,
     ) -> AgentRunResult[Any]:
         """Push this run's id onto the contextvar so nested delegates can read it."""
-        token = _current_run_id.set(self._effective_run_id(ctx))
+        token = current_run_id.set(self._effective_run_id(ctx))
         try:
             return await handler()
         finally:
-            _current_run_id.reset(token)
+            current_run_id.reset(token)
 
     async def before_run(self, ctx: RunContext[AgentDepsT]) -> None:
         """Register run lineage and emit `run_started`."""
@@ -296,15 +288,16 @@ class StepPersistence(AbstractCapability[AgentDepsT]):
     ) -> Any:
         run_id = self._effective_run_id(ctx)
         prior = await self.store.get_tool_effect(run_id=run_id, tool_call_id=call.tool_call_id)
-        started_at = prior.started_at if prior is not None else None
         await self.store.record_tool_effect(
             ToolEffectRecord(
                 tool_call_id=call.tool_call_id,
                 tool_name=tool_def.name,
                 run_id=run_id,
                 status='completed',
-                started_at=started_at or datetime.now(timezone.utc),
+                started_at=prior.started_at if prior is not None else datetime.now(timezone.utc),
                 ended_at=datetime.now(timezone.utc),
+                idempotency_key=prior.idempotency_key if prior is not None else None,
+                effect_summary=prior.effect_summary if prior is not None else None,
             )
         )
         await self.store.append_event(
@@ -328,16 +321,17 @@ class StepPersistence(AbstractCapability[AgentDepsT]):
     ) -> Any:
         run_id = self._effective_run_id(ctx)
         prior = await self.store.get_tool_effect(run_id=run_id, tool_call_id=call.tool_call_id)
-        started_at = prior.started_at if prior is not None else datetime.now(timezone.utc)
+        prior_summary = prior.effect_summary if prior is not None else None
         await self.store.record_tool_effect(
             ToolEffectRecord(
                 tool_call_id=call.tool_call_id,
                 tool_name=tool_def.name,
                 run_id=run_id,
                 status='failed',
-                started_at=started_at,
+                started_at=prior.started_at if prior is not None else datetime.now(timezone.utc),
                 ended_at=datetime.now(timezone.utc),
-                effect_summary=repr(error),
+                idempotency_key=prior.idempotency_key if prior is not None else None,
+                effect_summary=prior_summary if prior_summary is not None else repr(error),
             )
         )
         await self.store.append_event(

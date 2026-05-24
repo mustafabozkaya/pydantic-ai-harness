@@ -143,7 +143,7 @@ async def ask_librarian(question: str) -> str:
 await orchestrator.run('Where is ThinkingPartDelta defined?')
 
 # All librarian runs now point at the orchestrator's run_id:
-orch_run_id = (await store.list_runs(agent_name=None))[0].run_id  # or filter however
+orch_run_id = (await store.list_runs(conversation_id='orch-conv'))[-1].run_id
 delegates = await store.list_runs(parent_run_id=orch_run_id)
 ```
 
@@ -157,12 +157,16 @@ parent-child link.
 
 ## Inspecting a run tree
 
+`list_runs` returns matches sorted by `started_at` ascending across both
+backends — pick the most recent with `[-1]`.
+
 ```python
-# Every delegate of one orchestrator run
+# Every delegate of one orchestrator run (chronological)
 delegates = await store.list_runs(parent_run_id='orch-3f2a')
 
 # Every run in one dialogue (multi-turn conversation across many .run() calls)
 turns = await store.list_runs(conversation_id='conv-abc')
+latest_turn = turns[-1]
 
 # Filters combine (AND):
 focused = await store.list_runs(
@@ -198,9 +202,29 @@ history = await fork_run(store, run_id='libr-3f2a')
 # ... pass to a new delegate run with a different agent_name / conversation_id.
 ```
 
-Side-effect deduplication is the orchestrator's responsibility — populate
-`idempotency_key` and `effect_summary` on the `ToolEffectRecord` from inside
-the tool (or a thin wrapper) when the tool writes external state.
+Side-effect deduplication is the orchestrator's responsibility. Tools that
+write external state should annotate their in-flight `ToolEffectRecord`
+via `annotate_tool_effect`:
+
+```python
+from pydantic_ai_harness import annotate_tool_effect
+
+@orchestrator.tool
+async def set_label(ctx: RunContext[Deps], issue: int, label: str) -> str:
+    await annotate_tool_effect(
+        store,
+        ctx,
+        idempotency_key=f'issue-{issue}::label::{label}',
+        effect_summary=f'set label {label!r} on issue #{issue}',
+    )
+    await github.set_label(issue, label)   # the actual side effect
+    return 'ok'
+```
+
+The helper reads the active `run_id` from the `StepPersistence`
+`ContextVar` and `tool_call_id` / `tool_name` from `ctx`, then merges the
+metadata into the prior record. `after_tool_execute` preserves both
+fields when it writes the terminal `completed` / `failed` entry.
 
 ## Backends
 
@@ -227,10 +251,9 @@ IDs should still sanitise first.
 - It does not restore capability per-run state, graph-node state, retry
   counters, or in-flight streaming responses.
 - It does not deduplicate replayed side effects automatically. Tools that
-  write artifacts, labels, PRs, or external state should populate
-  `idempotency_key` and `effect_summary` on the `ToolEffectRecord` from
-  inside the tool (or a thin wrapper) so the orchestrator can decide
-  whether replay is safe.
+  write artifacts, labels, PRs, or external state should call
+  `annotate_tool_effect(store, ctx, ...)` (see [Failure recovery](#failure-recovery))
+  so the orchestrator can decide whether replay is safe.
 - It does not clean up old snapshots/events. Retention is the caller's
   responsibility.
 - It does not emit OpenTelemetry spans. pydantic_ai's `Instrumentation`
