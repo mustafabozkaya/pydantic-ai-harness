@@ -52,12 +52,12 @@ primitive for it (see [Three-level identity](#three-level-identity)).
 
 - **Explicit `run_id='libr-1'`** → used as-is for this one call.
   Single-shot use cases (deterministic id for testing, replay, debugging,
-  a one-off scripted run). **Do not reuse one capability instance with an
-  explicit `run_id` across multiple `.run()` calls** — the tool-effect
-  ledger is keyed by `(run_id, tool_call_id)` and providers reuse
-  deterministic tool-call ids, so the second call's records collide with
-  the first's. The implementation does not enforce this; it is the
-  caller's contract.
+  a one-off scripted run). Reusing one capability instance with the same
+  explicit `run_id` across multiple `.run()` calls **raises `ValueError`
+  in `before_run`** — the tool-effect ledger is keyed by
+  `(run_id, tool_call_id)` and providers reuse deterministic tool-call
+  ids, so a silent collision would erase the `unknown_after_crash`
+  signal. Use `conversation_id=` for multi-turn grouping instead.
 - **`agent_name` set, `run_id` unset** → `'{agent_name}-{8-char-hex}'`,
   freshly materialised in `for_run` per `.run()` call. Reusing one
   capability instance across runs yields distinct ids

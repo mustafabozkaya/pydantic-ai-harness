@@ -84,12 +84,13 @@ class StepPersistence(AbstractCapability[AgentDepsT]):
     Resolution order (materialised in `for_run`):
 
     1. **Explicit value** → used as-is. Single-shot use cases:
-       deterministic id for testing, replay, debugging. Reusing one
-       capability instance with an explicit `run_id` across multiple
-       `.run()` calls causes `ToolEffectRecord` collisions because the
+       deterministic id for testing, replay, debugging. Reusing the
+       capability across multiple `.run()` calls with the same explicit
+       `run_id` raises `ValueError` in `before_run` — the tool-effect
        ledger keys on `(run_id, tool_call_id)` and providers reuse
-       deterministic tool-call ids. The implementation does not enforce
-       this; it is the caller's contract.
+       deterministic tool-call ids, so a silent collision would erase
+       the `unknown_after_crash` signal. Use `conversation_id=` on
+       `Agent.run` for multi-turn grouping.
     2. **`agent_name` set, `run_id` unset** → `{agent_name}-{short-uuid}`,
        freshly materialised per `.run()`. Reusing the capability instance
        yields distinct ids. Recommended default for delegate capabilities.
@@ -194,10 +195,25 @@ class StepPersistence(AbstractCapability[AgentDepsT]):
             current_run_id.reset(token)
 
     async def before_run(self, ctx: RunContext[AgentDepsT]) -> None:
-        """Register run lineage and emit `run_started`."""
+        """Register run lineage and emit `run_started`.
+
+        When the caller pinned an explicit `run_id`, reject reuse — the
+        tool-effect ledger keys on `(run_id, tool_call_id)` and providers
+        reuse deterministic tool-call ids, so a second `Agent.run` with
+        the same explicit `run_id` would silently collide. The auto-derived
+        cases cannot trigger this check because each call materialises a
+        fresh id in `for_run`.
+        """
+        run_id = self._effective_run_id(ctx)
+        if self.run_id is not None and await self.store.get_run(run_id=run_id) is not None:
+            raise ValueError(
+                f'StepPersistence: run_id {run_id!r} is already in the store. '
+                'Explicit `run_id` is single-shot; pass `conversation_id=` to '
+                '`Agent.run` for multi-turn grouping instead.'
+            )
         await self.store.register_run(
             RunRecord(
-                run_id=self._effective_run_id(ctx),
+                run_id=run_id,
                 conversation_id=ctx.conversation_id,
                 parent_run_id=self.parent_run_id,
                 agent_name=self.agent_name,

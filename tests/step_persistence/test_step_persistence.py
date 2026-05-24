@@ -1262,33 +1262,25 @@ class TestRunIdIsPerCall:
         assert all(r.conversation_id == 'orch-conv' for r in records)
         assert all(r.run_id.startswith('orchestrator-') for r in records)
 
-    async def test_explicit_run_id_reuse_collides_ledger(self) -> None:
-        """Misuse contract: reusing an explicit `run_id` across `.run()` calls merges records.
+    async def test_explicit_run_id_reuse_raises(self) -> None:
+        """Reusing an explicit `run_id` across `.run()` calls raises ValueError.
 
-        This test locks down the documented behavior — the ledger is keyed by
-        `(run_id, tool_call_id)`, so providers that reuse deterministic
-        tool-call ids (like `TestModel`) produce colliding effect records.
-        The caller's contract is "don't do this." Use `conversation_id` for
-        multi-turn grouping instead.
+        The tool-effect ledger keys on `(run_id, tool_call_id)`, so a
+        silent second run would collide with the first. `before_run`
+        rejects the second run explicitly, pointing the caller to
+        `conversation_id` for multi-turn grouping.
         """
         store = InMemoryStepStore()
         agent = make_simple_agent([StepPersistence(store=store, run_id='shared')])
 
         await agent.run('first')
-        await agent.run('second')
 
-        # Both turns produced `tool_call_started` events under the same run_id...
-        events = await store.list_events(run_id='shared')
-        started = [e for e in events if e.kind == 'tool_call_started']
-        assert len(started) == 2
-        assert {e.tool_call_id for e in started} == {'pyd_ai_tool_call_id__add'}
+        with pytest.raises(ValueError, match=r"run_id 'shared' is already in the store"):
+            await agent.run('second')
 
-        # ...but only ONE effect record survives the (run_id, tool_call_id) key.
-        effect = await store.get_tool_effect(run_id='shared', tool_call_id='pyd_ai_tool_call_id__add')
-        assert effect is not None
-        assert effect.status == 'completed'  # the later write wins; earlier records gone.
-
-        # And only ONE RunRecord — register_run overwrote the first call's record.
-        # This is why explicit run_id should be single-shot.
+        # First run's records remain untouched.
         record = await store.get_run(run_id='shared')
         assert record is not None
+        effect = await store.get_tool_effect(run_id='shared', tool_call_id='pyd_ai_tool_call_id__add')
+        assert effect is not None
+        assert effect.status == 'completed'
