@@ -198,6 +198,8 @@ class DiskMediaStore:
 
     - `key_strategy=` — `Callable[[str, MediaContext], str]` overriding the
       relative path inside `directory` (e.g. `'images/<digest>.png'`).
+      The returned path must be relative and free of `..` segments
+      (absolute paths and `..` are both rejected with `ValueError`).
       Caveat: if the strategy uses `context.media_type` etc. to pick the
       filename, the same context must be supplied on `get`/`exists` to
       locate the blob.
@@ -224,9 +226,12 @@ class DiskMediaStore:
 
     def _path_for(self, uri: str, context: MediaContext) -> Path:
         relative = self._key_strategy(uri, context)
-        if '..' in Path(relative).parts:
+        candidate = Path(relative)
+        # `Path('/root') / '/abs'` discards `/root` and returns `/abs` — an absolute
+        # key would silently escape the store directory. Reject both shapes.
+        if candidate.is_absolute() or '..' in candidate.parts:
             raise ValueError(f'key_strategy produced traversal-unsafe path: {relative!r}')
-        return self._root / relative
+        return self._root / candidate
 
     async def put(self, data: bytes, *, context: MediaContext = _EMPTY_CONTEXT) -> str:
         return await anyio.to_thread.run_sync(self._sync_put, data, context)

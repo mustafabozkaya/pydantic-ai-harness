@@ -100,6 +100,16 @@ class TestDiskMediaStore:
         with pytest.raises(ValueError, match='traversal-unsafe'):
             await store.put(b'attack')
 
+    async def test_key_strategy_blocks_absolute_path(self, tmp_path: Path) -> None:
+        # `Path('/root') / '/abs'` silently returns `/abs` — without this check
+        # an absolute key escapes the store directory.
+        def evil(uri: str, ctx: MediaContext) -> str:
+            return '/etc/passwd'
+
+        store = DiskMediaStore(tmp_path, key_strategy=evil)
+        with pytest.raises(ValueError, match='traversal-unsafe'):
+            await store.put(b'attack')
+
     async def test_metadata_round_trips_via_sidecar(self, tmp_path: Path) -> None:
         store = DiskMediaStore(tmp_path)
         uri = await store.put(
