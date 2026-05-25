@@ -191,8 +191,8 @@ class S3MediaStore:
 
     **Metadata persistence**: `context.metadata` is sent as signed
     `x-amz-meta-*` headers on PUT (subject to ASCII naming rules) and
-    persisted by S3. The harness does not currently expose a method to
-    read it back; pull via the provider SDK / cli if you need it now.
+    read back via `get_metadata(uri)`, which strips the `x-amz-meta-`
+    prefix from the HEAD response headers.
     """
 
     def __init__(
@@ -288,3 +288,17 @@ class S3MediaStore:
 
     async def public_url(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> str | None:
         return await _resolve_public_url(self._public_url_resolver, uri, context)
+
+    async def get_metadata(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> Mapping[str, str]:
+        digest = parse_media_uri(uri)
+        response = await self._request('HEAD', self._object_path(uri, context))
+        if response.status_code == 404:
+            raise FileNotFoundError(f'media not found: {digest}')
+        if response.status_code // 100 != 2:
+            raise RuntimeError(f'S3 HEAD failed for {digest}: {response.status_code} {response.text[:200]}')
+        out: dict[str, str] = {}
+        for key, value in response.headers.items():
+            lower = key.lower()
+            if lower.startswith('x-amz-meta-'):
+                out[lower[len('x-amz-meta-') :]] = value
+        return out

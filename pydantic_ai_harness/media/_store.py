@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypeGuard, runtime_checkable
 
 import anyio.to_thread
 
@@ -48,9 +48,10 @@ class MediaContext:
       key strategies that want a recognisable extension, and for resolvers
       that need to set `Content-Disposition` on presigned URLs.
     - `metadata` — free-form `dict[str, str]` of user-supplied tags.
-      Persisted by `SqliteMediaStore` (`metadata` column) and `S3MediaStore`
-      (signed `x-amz-meta-*` headers). `DiskMediaStore` does **not**
-      persist metadata in v1 — see the store's docstring.
+      Persisted by all three concrete stores (`SqliteMediaStore` → JSON
+      column, `S3MediaStore` → signed `x-amz-meta-*` headers,
+      `DiskMediaStore` → sidecar JSON file). Read back via
+      `MediaStore.get_metadata(uri)`.
     """
 
     media_type: str | None = None
@@ -182,6 +183,10 @@ class MediaStore(Protocol):
         self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT
     ) -> str | None: ...  # pragma: no cover
 
+    async def get_metadata(
+        self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT
+    ) -> Mapping[str, str]: ...  # pragma: no cover
+
 
 class DiskMediaStore:
     """Filesystem store. One file per blob; default layout is `<directory>/<sha256>.bin`.
@@ -200,11 +205,10 @@ class DiskMediaStore:
       Without it `public_url(...)` returns `None` (local filesystem paths
       are not addressable from a model).
 
-    **Metadata persistence**: v1 does **not** persist `context.metadata`.
-    Cross-platform support (POSIX xattr / Windows ADS / sibling files) each
-    have load-bearing drawbacks; we'd rather ship nothing than a half-true
-    feature. Metadata is still passed to `key_strategy` and `public_url`
-    in-process — it just doesn't survive across process restarts.
+    **Metadata persistence**: `context.metadata` is written to a sidecar
+    JSON file (`<resolved>.meta.json`) alongside the blob and read back
+    via `get_metadata(uri)`. Sidecars are written atomically (tmp +
+    rename) and are missing only when no metadata was supplied.
     """
 
     def __init__(
@@ -235,6 +239,11 @@ class DiskMediaStore:
             tmp = path.with_suffix(path.suffix + '.tmp')
             tmp.write_bytes(data)
             tmp.replace(path)
+        if context.metadata:
+            meta_path = path.with_name(path.name + '.meta.json')
+            meta_tmp = meta_path.with_suffix('.json.tmp')
+            meta_tmp.write_text(json.dumps(dict(context.metadata)))
+            meta_tmp.replace(meta_path)
         return uri
 
     async def get(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> bytes:
@@ -254,6 +263,31 @@ class DiskMediaStore:
 
     async def public_url(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> str | None:
         return await _resolve_public_url(self._public_url_resolver, uri, context)
+
+    async def get_metadata(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> Mapping[str, str]:
+        return await anyio.to_thread.run_sync(self._sync_get_metadata, uri, context)
+
+    def _sync_get_metadata(self, uri: str, context: MediaContext) -> Mapping[str, str]:
+        path = self._path_for(uri, context)
+        meta_path = path.with_name(path.name + '.meta.json')
+        if not meta_path.exists():
+            return _EMPTY_METADATA
+        return _coerce_metadata_mapping(json.loads(meta_path.read_text()))
+
+
+def _is_object_dict(raw: object) -> TypeGuard[dict[object, object]]:
+    return isinstance(raw, dict)
+
+
+def _coerce_metadata_mapping(raw: object) -> Mapping[str, str]:
+    if not _is_object_dict(raw):
+        raise ValueError(f'metadata payload must be a JSON object, got {type(raw).__name__}')
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError(f'metadata entries must be str→str, got {key!r}: {value!r}')
+        out[key] = value
+    return out
 
 
 class SqliteMediaStore:
@@ -278,12 +312,13 @@ class SqliteMediaStore:
 
     `INSERT OR IGNORE` makes writes idempotent — the second `put` with the
     same content is a no-op, not an overwrite. `metadata` is stored as
-    canonical JSON of `context.metadata` (empty mapping → `'{}'`).
+    canonical JSON of `context.metadata` (empty mapping → `'{}'`) and
+    read back via `get_metadata(uri)`.
 
-    `key_strategy` is accepted for API symmetry with `DiskMediaStore` /
-    `S3MediaStore` but ignored at the storage layer — the primary key is
-    always the content digest. It is, however, threaded into
-    `public_url(...)` calls (so user resolvers see it).
+    There is no `key_strategy=` parameter: SqliteMediaStore is
+    content-addressed and the digest IS the primary key — any user-chosen
+    storage key would either break dedup or be a no-op. Use `table=` if
+    you need a non-default table name.
     """
 
     def __init__(
@@ -292,7 +327,6 @@ class SqliteMediaStore:
         database: str | Path | None = None,
         connection: sqlite3.Connection | None = None,
         table: str = 'media',
-        key_strategy: KeyStrategy = default_key_strategy,
         public_url: PublicUrlResolver | None = None,
     ) -> None:
         if (database is None) == (connection is None):
@@ -303,7 +337,6 @@ class SqliteMediaStore:
             raise ValueError(f'invalid table name: {table!r}')
         self._table = table
         self._schema_ready = False
-        self._key_strategy = key_strategy
         self._public_url_resolver = public_url
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
@@ -382,3 +415,18 @@ class SqliteMediaStore:
 
     async def public_url(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> str | None:
         return await _resolve_public_url(self._public_url_resolver, uri, context)
+
+    async def get_metadata(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> Mapping[str, str]:
+        digest = parse_media_uri(uri)
+        return await anyio.to_thread.run_sync(self._sync_get_metadata, digest)
+
+    def _sync_get_metadata(self, digest: str) -> Mapping[str, str]:
+        conn = self._open()
+        try:
+            self._ensure_schema(conn)
+            row = conn.execute(f'SELECT metadata FROM {self._table} WHERE sha256 = ?', (digest,)).fetchone()
+        finally:
+            self._maybe_close(conn)
+        if row is None:
+            raise FileNotFoundError(f'media not found: {digest}')
+        return _coerce_metadata_mapping(json.loads(row[0]))

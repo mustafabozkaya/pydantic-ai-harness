@@ -100,6 +100,38 @@ class TestDiskMediaStore:
         with pytest.raises(ValueError, match='traversal-unsafe'):
             await store.put(b'attack')
 
+    async def test_metadata_round_trips_via_sidecar(self, tmp_path: Path) -> None:
+        store = DiskMediaStore(tmp_path)
+        uri = await store.put(
+            b'tagged',
+            context=MediaContext(metadata={'origin': 'user', 'tenant': 'acme'}),
+        )
+        sidecars = list(tmp_path.glob('*.meta.json'))
+        assert len(sidecars) == 1
+        assert await store.get_metadata(uri) == {'origin': 'user', 'tenant': 'acme'}
+
+    async def test_metadata_absent_when_not_supplied(self, tmp_path: Path) -> None:
+        store = DiskMediaStore(tmp_path)
+        uri = await store.put(b'no tags')
+        assert list(tmp_path.glob('*.meta.json')) == []
+        assert await store.get_metadata(uri) == {}
+
+    async def test_get_metadata_rejects_non_object_sidecar(self, tmp_path: Path) -> None:
+        store = DiskMediaStore(tmp_path)
+        uri = await store.put(b'with meta', context=MediaContext(metadata={'k': 'v'}))
+        sidecar = next(iter(tmp_path.glob('*.meta.json')))
+        sidecar.write_text('"not an object"')
+        with pytest.raises(ValueError, match='must be a JSON object'):
+            await store.get_metadata(uri)
+
+    async def test_get_metadata_rejects_non_string_values(self, tmp_path: Path) -> None:
+        store = DiskMediaStore(tmp_path)
+        uri = await store.put(b'with meta', context=MediaContext(metadata={'k': 'v'}))
+        sidecar = next(iter(tmp_path.glob('*.meta.json')))
+        sidecar.write_text('{"k": 1}')
+        with pytest.raises(ValueError, match='must be str→str'):
+            await store.get_metadata(uri)
+
 
 class TestSqliteMediaStore:
     async def test_put_get_round_trip(self, tmp_path: Path) -> None:
@@ -109,7 +141,7 @@ class TestSqliteMediaStore:
 
     async def test_put_persists_metadata_column(self, tmp_path: Path) -> None:
         store = SqliteMediaStore(database=tmp_path / 'media.db')
-        await store.put(
+        uri = await store.put(
             b'tagged',
             context=MediaContext(media_type='image/png', metadata={'origin': 'user', 'tenant': 'acme'}),
         )
@@ -119,9 +151,12 @@ class TestSqliteMediaStore:
         finally:
             conn.close()
         assert row[0] == 'image/png'
-        import json as _json
+        assert await store.get_metadata(uri) == {'origin': 'user', 'tenant': 'acme'}
 
-        assert _json.loads(row[1]) == {'origin': 'user', 'tenant': 'acme'}
+    async def test_get_metadata_missing_raises(self, tmp_path: Path) -> None:
+        store = SqliteMediaStore(database=tmp_path / 'media.db')
+        with pytest.raises(FileNotFoundError):
+            await store.get_metadata(media_uri_for(b'never put'))
 
     async def test_with_shared_connection(self) -> None:
         connection = sqlite3.connect(':memory:', check_same_thread=False)
@@ -452,6 +487,62 @@ class TestS3MediaStoreWithMockTransport:
             )
             with pytest.raises(RuntimeError, match='S3 GET failed'):
                 await store.get(media_uri_for(b'x'))
+
+    async def test_get_metadata_reads_x_amz_meta_headers(self) -> None:
+        async def handler(request: Request) -> Response:
+            return Response(
+                200,
+                headers={
+                    'x-amz-meta-origin': 'pipeline-a',
+                    'x-amz-meta-tenant': 'acme',
+                    'content-type': 'image/png',
+                    'content-length': '0',
+                },
+            )
+
+        async with AsyncClient(transport=MockTransport(handler)) as client:
+            store = S3MediaStore(
+                bucket='b',
+                endpoint='https://example.com',
+                region='auto',
+                access_key_id='k',
+                secret_access_key='s',
+                client=client,
+            )
+            meta = await store.get_metadata(media_uri_for(b'x'))
+        assert meta == {'origin': 'pipeline-a', 'tenant': 'acme'}
+
+    async def test_get_metadata_404_raises(self) -> None:
+        async def handler(request: Request) -> Response:
+            return Response(404)
+
+        async with AsyncClient(transport=MockTransport(handler)) as client:
+            store = S3MediaStore(
+                bucket='b',
+                endpoint='https://example.com',
+                region='auto',
+                access_key_id='k',
+                secret_access_key='s',
+                client=client,
+            )
+            with pytest.raises(FileNotFoundError):
+                await store.get_metadata(media_uri_for(b'missing'))
+
+    async def test_get_metadata_500_raises(self) -> None:
+        async def handler(request: Request) -> Response:
+            return Response(500, content=b'oops')
+
+        async with AsyncClient(transport=MockTransport(handler)) as client:
+            store = S3MediaStore(
+                bucket='b',
+                endpoint='https://example.com',
+                region='auto',
+                access_key_id='k',
+                secret_access_key='s',
+                client=client,
+            )
+            with pytest.raises(RuntimeError, match='S3 HEAD failed'):
+                await store.get_metadata(media_uri_for(b'x'))
 
     async def test_head_failure_raises(self) -> None:
         async def handler(request: Request) -> Response:

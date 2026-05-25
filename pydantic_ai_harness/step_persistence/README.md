@@ -401,21 +401,23 @@ class MediaContext:
 All fields default; new fields are added non-breakingly as use cases
 emerge. Pass what you have, ignore the rest.
 
-**Persistence by store**:
+**Persistence by store** — all three round-trip via `get_metadata(uri)`:
 
 - `SqliteMediaStore` writes `metadata` to a JSON column and `media_type`
   to a dedicated column
 - `S3MediaStore` sends `metadata` as signed `x-amz-meta-*` headers
   (ASCII alphanumeric + dash key names) and `media_type` as
-  `Content-Type`
-- `DiskMediaStore` **does not persist** `metadata` in v1 — accepts it
-  in-process (resolvers / key strategies see it) but does not write it
-  to a sidecar. Use a custom `MediaStore` subclass if you need durable
-  disk metadata
+  `Content-Type`; `get_metadata` reads them back from the HEAD response
+- `DiskMediaStore` writes a sidecar JSON file (`<resolved>.meta.json`)
+  alongside each blob, atomic via tmp + rename. Sidecars are absent
+  only when the put carried no metadata
 
 ### `key_strategy` — controlling the backend storage path
 
-Default is `<sha256>.bin`. Override per store to fit existing layouts:
+Default is `<sha256>.bin`. `DiskMediaStore` and `S3MediaStore` accept
+overrides to fit existing layouts; `SqliteMediaStore` does not (its
+primary key is the digest, so a user-chosen key would either break
+dedup or be a no-op):
 
 ```python
 from pydantic_ai_harness.media import DiskMediaStore, MediaContext
