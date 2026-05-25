@@ -272,14 +272,98 @@ fields when it writes the terminal `completed` / `failed` entry.
       monotonic counter (NOT `step_index`, which would collide when the
       same `run_id` is reused across `Agent.run` calls — `ctx.run_step`
       resets to 0 each call).
+- `SqliteStepStore(database='runs.db')` — single SQLite file with tables
+  `runs`, `events`, `snapshots`, `tool_effects`, and a sibling `media`
+  table for externalized blobs (see [Persisting media](#persisting-media)
+  below). WAL mode is enabled; `tool_effects` upserts per
+  `(run_id, tool_call_id)` so the latest state wins; snapshots use
+  `AUTOINCREMENT seq` to mirror `FileStepStore._next_snapshot_seq`.
+  Pass `connection=` instead of `database=` to share a `sqlite3.Connection`
+  with the rest of your application; the connection must be opened with
+  `check_same_thread=False` because hook calls are dispatched onto a
+  worker thread.
 
-Both implement the same async `StepStore` protocol, so capability hooks
-never block the event loop on the file backend (I/O is dispatched via
-`anyio.to_thread`).
+All three implement the same async `StepStore` protocol, so capability
+hooks never block the event loop on the file/sqlite backends (I/O is
+dispatched via `anyio.to_thread`).
 
 `FileStepStore` validates `run_id` against `[A-Za-z0-9_.-]{1,200}` (and
 rejects `..`) to prevent path traversal — callers passing user-controlled
 IDs should still sanitise first.
+
+## Persisting media
+
+`BinaryContent` payloads (images, audio, documents, video) inline as
+base64 inside a snapshot would balloon every file/row containing the
+message. Both `FileStepStore` and `SqliteStepStore` externalize any
+`BinaryContent.data` ≥ **64 KiB** through a configured `MediaStore`,
+leaving a URI reference in the snapshot. Round-trip is transparent —
+`latest_snapshot(...).messages[*]` returns `BinaryContent` with the
+original bytes.
+
+| StepStore           | Default `media_store`                  | Where blobs live                      |
+| ------------------- | --------------------------------------- | ------------------------------------- |
+| `InMemoryStepStore` | _(not applicable)_                     | bytes stay in the in-memory snapshot  |
+| `FileStepStore`     | `DiskMediaStore(<root>/media/)`        | `<root>/media/<sha256>.bin`           |
+| `SqliteStepStore`   | `SqliteMediaStore(database=<same db>)` | sibling `media` table in the same DB  |
+
+Override the destination by passing your own `MediaStore`:
+
+```python
+from pydantic_ai_harness import FileStepStore
+from pydantic_ai_harness.media import S3MediaStore
+
+store = FileStepStore(
+    'runs',
+    media_store=S3MediaStore(
+        bucket='my-bucket',
+        endpoint='https://<account>.r2.cloudflarestorage.com',
+        region='auto',
+        access_key_id=...,
+        secret_access_key=...,
+    ),
+    media_threshold_bytes=64 * 1024,  # raise/lower if you want
+)
+```
+
+Opt out entirely (keep bytes inline in the snapshot JSON/row):
+
+```python
+FileStepStore('runs', media_store=None)
+SqliteStepStore(database='runs.db', media_store=None)
+```
+
+URIs are `media+sha256://<hex>`, content-addressed. The same blob written
+through any `MediaStore` resolves the same way — dedup is automatic and
+moving the underlying storage is a one-line swap. The shipped
+implementations are:
+
+- `DiskMediaStore(directory)` — one file per blob at
+  `<directory>/<sha256>.bin`.
+- `SqliteMediaStore(database=...)` or `SqliteMediaStore(connection=...)` —
+  one row per blob (`INSERT OR IGNORE` for content-addressed dedup).
+- `S3MediaStore(bucket=, endpoint=, region=, access_key_id=, secret_access_key=)`
+  — path-style URLs + handrolled SigV4. Compatible with AWS S3, Cloudflare
+  R2 (`region='auto'`), MinIO, and other S3-compatible providers. PUT/GET/HEAD
+  only — no multipart, lifecycle, or listing in v1.
+
+> **Note on the future `MediaExternalizer` capability.** The
+> `MediaStore` protocol shipped here is also the substrate for a
+> separate capability (planned, not in this release) that rewrites
+> `BinaryContent` to URL parts **before** the model sees them, reducing
+> wire payload and token cost. When that lands, the composition will be
+> `Agent(capabilities=[MediaExternalizer(store), StepPersistence(...)])`
+> and `StepPersistence` will see already-URL-ified messages — externalize
+> walk becomes a no-op. The existing API does not change.
+
+### Persisting unsupported backends
+
+DynamoDB, Postgres, Redis, GCS, and other backends are out of scope for
+this release. Write your own `StepStore` (≈ ten methods on a Protocol) or
+your own `MediaStore` (three methods) and pass it via `store=` /
+`media_store=`. Please open an issue if you ship one — we want to feed
+the eventual shared adapter layer with N≥3 real implementations before
+abstracting.
 
 ## What this capability does **not** do
 

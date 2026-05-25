@@ -35,6 +35,7 @@ from pydantic_ai_harness import (
     FileStepStore,
     InMemoryStepStore,
     RunRecord,
+    SqliteStepStore,
     StepEvent,
     StepPersistence,
     StepStore,
@@ -1237,6 +1238,10 @@ class TestFromSpecBackendValidation:
     def test_memory_backend_still_works(self) -> None:
         cap: StepPersistence[Any] = StepPersistence.from_spec(backend='memory')
         assert isinstance(cap.store, InMemoryStepStore)
+
+    def test_sqlite_backend(self, tmp_path: Path) -> None:
+        cap: StepPersistence[Any] = StepPersistence.from_spec(backend='sqlite', database=str(tmp_path / 'runs.db'))
+        assert isinstance(cap.store, SqliteStepStore)
 
 
 # ---------------------------------------------------------------------------

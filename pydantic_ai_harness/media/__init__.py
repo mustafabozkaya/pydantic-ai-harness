@@ -1,0 +1,29 @@
+"""Content-addressed media stores for offloading large binary parts.
+
+Used by `pydantic_ai_harness.step_persistence` to keep snapshots small when
+messages carry `BinaryContent` payloads. Public API is intentionally small
+and stable; a forthcoming `MediaExternalizer` capability will reuse these
+stores for in-flight wire-payload reduction (rewriting `BinaryContent` to
+URL parts before the model sees them).
+"""
+
+from pydantic_ai_harness.media._s3 import S3MediaStore
+from pydantic_ai_harness.media._store import (
+    DiskMediaStore,
+    MediaStore,
+    SqliteMediaStore,
+    media_uri_for,
+    parse_media_uri,
+)
+from pydantic_ai_harness.media._walker import externalize_media, restore_media
+
+__all__ = [
+    'DiskMediaStore',
+    'MediaStore',
+    'S3MediaStore',
+    'SqliteMediaStore',
+    'externalize_media',
+    'media_uri_for',
+    'parse_media_uri',
+    'restore_media',
+]

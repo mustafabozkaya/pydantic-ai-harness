@@ -114,9 +114,11 @@ class StepPersistence(AbstractCapability[AgentDepsT]):
     def from_spec(cls, *args: Any, **kwargs: Any) -> StepPersistence[Any]:
         """Construct from a serialised spec.
 
-        Supports `backend='memory'` (default) or `backend='file'` with `directory`.
-        Raises `ValueError` for any other `backend` value — silently falling
-        back to in-memory storage would turn a typo into accidental non-durability.
+        Supports `backend='memory'` (default), `backend='file'` (with
+        `directory`), or `backend='sqlite'` (with `database`). Raises
+        `ValueError` for any other `backend` value — silently falling
+        back to in-memory storage would turn a typo into accidental
+        non-durability.
         """
         backend = kwargs.pop('backend', 'memory')
         if backend == 'memory':
@@ -126,7 +128,12 @@ class StepPersistence(AbstractCapability[AgentDepsT]):
 
             directory = kwargs.pop('directory', '.step-persistence')
             return cls(store=FileStepStore(directory), **kwargs)
-        raise ValueError(f'unknown backend {backend!r}; expected `memory` or `file`')
+        if backend == 'sqlite':
+            from pydantic_ai_harness.step_persistence._store import SqliteStepStore
+
+            database = kwargs.pop('database', '.step-persistence.db')
+            return cls(store=SqliteStepStore(database=database), **kwargs)
+        raise ValueError(f'unknown backend {backend!r}; expected `memory`, `file`, or `sqlite`')
 
     async def for_run(self, ctx: RunContext[AgentDepsT]) -> AbstractCapability[AgentDepsT]:
         """Materialise `run_id` and `parent_run_id` for this `Agent.run` call.

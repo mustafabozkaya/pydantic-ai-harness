@@ -2,14 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.10"
 
-[options]
-
-[options.exclude-newer-package]
-pydantic-ai-slim = false
-pydantic-graph = false
-pydantic-ai = false
-pydantic-evals = false
-
 [[package]]
 name = "annotated-doc"
 version = "0.0.4"
@@ -910,6 +902,7 @@ wheels = [
 name = "pydantic-ai-harness"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "pydantic-ai-slim" },
 ]
 
@@ -945,6 +938,7 @@ lint = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic-ai-slim", specifier = ">=1.95.1" },
     { name = "pydantic-ai-slim", extras = ["dbos"], marker = "extra == 'dbos'" },
     { name = "pydantic-ai-slim", extras = ["temporal"], marker = "extra == 'temporal'" },

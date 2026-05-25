@@ -28,6 +28,7 @@ classifiers = [
     'Typing :: Typed',
 ]
 dependencies = [
+    "httpx>=0.28.1",
     'pydantic-ai-slim>=1.95.1',
 ]
 

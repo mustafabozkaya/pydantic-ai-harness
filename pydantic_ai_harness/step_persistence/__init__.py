@@ -10,6 +10,7 @@ from pydantic_ai_harness.step_persistence._helpers import (
 from pydantic_ai_harness.step_persistence._store import (
     FileStepStore,
     InMemoryStepStore,
+    SqliteStepStore,
     StepStore,
 )
 from pydantic_ai_harness.step_persistence._types import (
@@ -27,6 +28,7 @@ __all__ = [
     'FileStepStore',
     'InMemoryStepStore',
     'RunRecord',
+    'SqliteStepStore',
     'StepEvent',
     'StepPersistence',
     'StepStore',
