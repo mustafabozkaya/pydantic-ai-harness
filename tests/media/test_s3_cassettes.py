@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import pytest
 
-from pydantic_ai_harness.media import S3MediaStore, media_uri_for
+from pydantic_ai_harness.media import MediaContext, S3MediaStore, media_uri_for
 
 pytestmark = pytest.mark.anyio
 
 # Deterministic payload so the URI / object key are stable across re-records.
 _PAYLOAD = b'pydantic-ai-harness step-persistence VCR cassette payload v1'
 _MISSING_URI = 'media+sha256://' + ('0' * 64)
+_CONTEXT = MediaContext(media_type='application/octet-stream')
 
 
 class TestS3MediaStoreCassettes:
@@ -38,12 +39,12 @@ class TestS3MediaStoreCassettes:
 
     @pytest.mark.vcr
     async def test_put_succeeds(self, s3_store: S3MediaStore) -> None:
-        uri = await s3_store.put(_PAYLOAD, media_type='application/octet-stream')
+        uri = await s3_store.put(_PAYLOAD, context=_CONTEXT)
         assert uri == media_uri_for(_PAYLOAD)
 
     @pytest.mark.vcr
     async def test_exists_present_after_put(self, s3_store: S3MediaStore) -> None:
-        await s3_store.put(_PAYLOAD, media_type='application/octet-stream')
+        await s3_store.put(_PAYLOAD, context=_CONTEXT)
         assert await s3_store.exists(media_uri_for(_PAYLOAD)) is True
 
     @pytest.mark.vcr
@@ -52,7 +53,7 @@ class TestS3MediaStoreCassettes:
 
     @pytest.mark.vcr
     async def test_get_round_trips_bytes(self, s3_store: S3MediaStore) -> None:
-        await s3_store.put(_PAYLOAD, media_type='application/octet-stream')
+        await s3_store.put(_PAYLOAD, context=_CONTEXT)
         fetched = await s3_store.get(media_uri_for(_PAYLOAD))
         assert fetched == _PAYLOAD
 

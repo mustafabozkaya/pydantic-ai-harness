@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 import re
 import sqlite3
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
 import anyio.to_thread
@@ -20,27 +23,83 @@ import anyio.to_thread
 _URI_SCHEME = 'media+sha256://'
 _HEX_RE = re.compile(r'^[0-9a-f]{64}$')
 
-PublicUrlResolver = Callable[[str], 'str | None | Awaitable[str | None]']
+# Sentinel: empty, shareable, immutable. Used as the default `context` on every
+# `MediaStore` method. Pulled into a module constant so a default-bound empty
+# context is always the same instance (cheap identity checks, no per-call
+# allocation).
+_EMPTY_METADATA: Mapping[str, str] = MappingProxyType({})
+
+
+@dataclass(frozen=True, kw_only=True)
+class MediaContext:
+    """Per-operation context threaded through `MediaStore` methods + callables.
+
+    Extensible bag — new use cases (TTL hints, response-header overrides,
+    origin run ids for audit, etc.) add a field here without breaking any
+    method signature or user-supplied callable. Fields default to `None` /
+    empty so callers and resolvers can ignore what they don't care about.
+
+    Conventions:
+
+    - `media_type` — IANA media type (`image/png`, `audio/wav`, ...). When
+      absent, callbacks may guess from `filename` (stdlib `mimetypes`) or
+      fall back to a generic default. Never required.
+    - `filename` — original filename for the bytes, if known. Useful for
+      key strategies that want a recognisable extension, and for resolvers
+      that need to set `Content-Disposition` on presigned URLs.
+    - `metadata` — free-form `dict[str, str]` of user-supplied tags.
+      Persisted by `SqliteMediaStore` (`metadata` column) and `S3MediaStore`
+      (signed `x-amz-meta-*` headers). `DiskMediaStore` does **not**
+      persist metadata in v1 — see the store's docstring.
+    """
+
+    media_type: str | None = None
+    filename: str | None = None
+    metadata: Mapping[str, str] = field(default_factory=lambda: _EMPTY_METADATA)
+
+
+_EMPTY_CONTEXT = MediaContext()
+
+
+PublicUrlResolver = Callable[[str, MediaContext], 'str | None | Awaitable[str | None]']
 """User-supplied callable that turns a `media+sha256://<hex>` URI into a fetchable URL.
 
 Sync or async; the store auto-detects via `inspect.isawaitable` on the result.
 Return `None` to signal "no URL for this URI" (the resolver may be content-aware
 and choose to inline some payloads).
 
-Common shapes:
+Receives the full `MediaContext` so the resolver can vary its output by media
+type, response headers, TTL, etc. without breaking the signature later.
+"""
 
-- **Static base URL** (public bucket, CDN): `lambda uri: f'{base}/{path_from(uri)}'`.
-  See `make_static_public_url` for the boilerplate-free version.
-- **Presigned URL** (private bucket, rotating signature): async callable that
-  signs fresh on each invocation, with TTL captured in the closure.
-- **No URL available**: pass nothing — the store's `public_url(uri)` returns `None`.
+KeyStrategy = Callable[[str, MediaContext], str]
+"""User-supplied callable that turns a URI + context into a backend storage key.
+
+Used by `DiskMediaStore` / `SqliteMediaStore` / `S3MediaStore` to derive the
+on-disk path / DB primary key / S3 object key from the canonical URI. Default
+strategy is `<sha256>.bin` (see `default_key_strategy`); override when an
+existing bucket layout or naming convention dictates otherwise.
+
+**Caveat**: if your strategy depends on `context.media_type` (e.g. to pick an
+extension), `get(uri)` and `exists(uri)` won't find the blob unless callers
+pass the same context at read time. For pure path-organisation strategies
+(e.g. `'media/' + digest + '.bin'`) the context can be ignored entirely.
 """
 
 
-async def _resolve_public_url(resolver: PublicUrlResolver | None, uri: str) -> str | None:
+def default_key_strategy(uri: str, context: MediaContext) -> str:
+    """Default storage key: `<sha256>.bin`. Ignores context."""
+    return f'{parse_media_uri(uri)}.bin'
+
+
+async def _resolve_public_url(
+    resolver: PublicUrlResolver | None,
+    uri: str,
+    context: MediaContext,
+) -> str | None:
     if resolver is None:
         return None
-    result = resolver(uri)
+    result = resolver(uri, context)
     if inspect.isawaitable(result):
         return await result
     return result
@@ -51,7 +110,7 @@ def make_static_public_url(
     *,
     key_prefix: str = '',
     extension: str = '.bin',
-) -> Callable[[str], str]:
+) -> PublicUrlResolver:
     """Build a static-URL resolver for the common "public bucket / CDN" case.
 
     The returned callable takes a `media+sha256://<hex>` URI and returns
@@ -59,10 +118,13 @@ def make_static_public_url(
     known stable URL — e.g. an R2 public bucket (`https://pub-xxx.r2.dev`)
     or a CDN in front of S3. For presigned URLs or any logic that runs per
     request, pass your own callable instead.
+
+    Ignores `MediaContext` — pass your own callable if URL needs to vary
+    with media type, TTL, etc.
     """
     base = base.rstrip('/')
 
-    def resolver(uri: str) -> str:
+    def resolver(uri: str, context: MediaContext) -> str:
         digest = parse_media_uri(uri)
         return f'{base}/{key_prefix}{digest}{extension}'
 
@@ -100,83 +162,98 @@ class MediaStore(Protocol):
     `put` returns the canonical URI (`media+sha256://<hex>`) for the bytes —
     callers do not pick the key. Implementations may dedup on the hash.
 
-    `media_type` is advisory metadata (e.g. `image/png`); stores are free to
-    persist or ignore it. The hash never depends on it.
+    Every method takes an optional `context: MediaContext` for forward
+    extensibility. New context fields don't break existing call sites or
+    user-supplied callables.
 
     `public_url(uri)` returns a URL the model can fetch directly, or `None`
     if the store can't or hasn't been configured to produce one. The forthcoming
     `MediaExternalizer` capability uses this to rewrite `BinaryContent` parts
-    to `ImageUrl`/`AudioUrl`/etc. before the model sees the message. Both
-    static (CDN, public bucket) and dynamic (presigned, rotating signature)
-    URLs fit the same shape — the concrete stores accept a user-supplied
-    `PublicUrlResolver` callable.
+    to `ImageUrl`/`AudioUrl`/etc. before the model sees the message.
     """
 
-    async def put(self, data: bytes, *, media_type: str | None = None) -> str: ...  # pragma: no cover
+    async def put(self, data: bytes, *, context: MediaContext = _EMPTY_CONTEXT) -> str: ...  # pragma: no cover
 
-    async def get(self, uri: str) -> bytes: ...  # pragma: no cover
+    async def get(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> bytes: ...  # pragma: no cover
 
-    async def exists(self, uri: str) -> bool: ...  # pragma: no cover
+    async def exists(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> bool: ...  # pragma: no cover
 
-    async def public_url(self, uri: str) -> str | None: ...  # pragma: no cover
+    async def public_url(
+        self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT
+    ) -> str | None: ...  # pragma: no cover
 
 
 class DiskMediaStore:
-    """Filesystem store. One file per blob at `<directory>/<sha256>.bin`.
+    """Filesystem store. One file per blob; default layout is `<directory>/<sha256>.bin`.
 
     Directory is created on first write. Dedup is automatic via the
     content-hash filename.
 
-    Pass `public_url=` to expose a URL for each blob — useful when a local
-    HTTP server fronts the directory. Without it `public_url(...)` returns
-    `None` (local filesystem paths are not addressable from a model).
+    Customisation:
+
+    - `key_strategy=` — `Callable[[str, MediaContext], str]` overriding the
+      relative path inside `directory` (e.g. `'images/<digest>.png'`).
+      Caveat: if the strategy uses `context.media_type` etc. to pick the
+      filename, the same context must be supplied on `get`/`exists` to
+      locate the blob.
+    - `public_url=` — resolver exposing a URL the model can fetch.
+      Without it `public_url(...)` returns `None` (local filesystem paths
+      are not addressable from a model).
+
+    **Metadata persistence**: v1 does **not** persist `context.metadata`.
+    Cross-platform support (POSIX xattr / Windows ADS / sibling files) each
+    have load-bearing drawbacks; we'd rather ship nothing than a half-true
+    feature. Metadata is still passed to `key_strategy` and `public_url`
+    in-process — it just doesn't survive across process restarts.
     """
 
     def __init__(
         self,
         directory: str | Path,
         *,
+        key_strategy: KeyStrategy = default_key_strategy,
         public_url: PublicUrlResolver | None = None,
     ) -> None:
         self._root = Path(directory)
+        self._key_strategy = key_strategy
         self._public_url_resolver = public_url
 
-    def _path_for(self, digest: str) -> Path:
-        return self._root / f'{digest}.bin'
+    def _path_for(self, uri: str, context: MediaContext) -> Path:
+        relative = self._key_strategy(uri, context)
+        if '..' in Path(relative).parts:
+            raise ValueError(f'key_strategy produced traversal-unsafe path: {relative!r}')
+        return self._root / relative
 
-    async def put(self, data: bytes, *, media_type: str | None = None) -> str:
-        return await anyio.to_thread.run_sync(self._sync_put, data)
+    async def put(self, data: bytes, *, context: MediaContext = _EMPTY_CONTEXT) -> str:
+        return await anyio.to_thread.run_sync(self._sync_put, data, context)
 
-    def _sync_put(self, data: bytes) -> str:
+    def _sync_put(self, data: bytes, context: MediaContext) -> str:
         uri = media_uri_for(data)
-        digest = parse_media_uri(uri)
-        self._root.mkdir(parents=True, exist_ok=True)
-        path = self._path_for(digest)
+        path = self._path_for(uri, context)
+        path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
-            tmp = path.with_suffix('.bin.tmp')
+            tmp = path.with_suffix(path.suffix + '.tmp')
             tmp.write_bytes(data)
             tmp.replace(path)
         return uri
 
-    async def get(self, uri: str) -> bytes:
-        digest = parse_media_uri(uri)
-        return await anyio.to_thread.run_sync(self._sync_get, digest)
+    async def get(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> bytes:
+        return await anyio.to_thread.run_sync(self._sync_get, uri, context)
 
-    def _sync_get(self, digest: str) -> bytes:
-        path = self._path_for(digest)
+    def _sync_get(self, uri: str, context: MediaContext) -> bytes:
+        path = self._path_for(uri, context)
         if not path.exists():
-            raise FileNotFoundError(f'media not found: {digest}')
+            raise FileNotFoundError(f'media not found: {uri}')
         return path.read_bytes()
 
-    async def exists(self, uri: str) -> bool:
-        digest = parse_media_uri(uri)
-        return await anyio.to_thread.run_sync(self._sync_exists, digest)
+    async def exists(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> bool:
+        return await anyio.to_thread.run_sync(self._sync_exists, uri, context)
 
-    def _sync_exists(self, digest: str) -> bool:
-        return self._path_for(digest).exists()
+    def _sync_exists(self, uri: str, context: MediaContext) -> bool:
+        return self._path_for(uri, context).exists()
 
-    async def public_url(self, uri: str) -> str | None:
-        return await _resolve_public_url(self._public_url_resolver, uri)
+    async def public_url(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> str | None:
+        return await _resolve_public_url(self._public_url_resolver, uri, context)
 
 
 class SqliteMediaStore:
@@ -194,12 +271,19 @@ class SqliteMediaStore:
         sha256 TEXT PRIMARY KEY,
         media_type TEXT,
         bytes BLOB NOT NULL,
-        size_bytes INTEGER NOT NULL
+        size_bytes INTEGER NOT NULL,
+        metadata TEXT
     );
     ```
 
     `INSERT OR IGNORE` makes writes idempotent — the second `put` with the
-    same content is a no-op, not an overwrite.
+    same content is a no-op, not an overwrite. `metadata` is stored as
+    canonical JSON of `context.metadata` (empty mapping → `'{}'`).
+
+    `key_strategy` is accepted for API symmetry with `DiskMediaStore` /
+    `S3MediaStore` but ignored at the storage layer — the primary key is
+    always the content digest. It is, however, threaded into
+    `public_url(...)` calls (so user resolvers see it).
     """
 
     def __init__(
@@ -208,6 +292,7 @@ class SqliteMediaStore:
         database: str | Path | None = None,
         connection: sqlite3.Connection | None = None,
         table: str = 'media',
+        key_strategy: KeyStrategy = default_key_strategy,
         public_url: PublicUrlResolver | None = None,
     ) -> None:
         if (database is None) == (connection is None):
@@ -218,6 +303,7 @@ class SqliteMediaStore:
             raise ValueError(f'invalid table name: {table!r}')
         self._table = table
         self._schema_ready = False
+        self._key_strategy = key_strategy
         self._public_url_resolver = public_url
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
@@ -228,7 +314,8 @@ class SqliteMediaStore:
             'sha256 TEXT PRIMARY KEY, '
             'media_type TEXT, '
             'bytes BLOB NOT NULL, '
-            'size_bytes INTEGER NOT NULL)'
+            'size_bytes INTEGER NOT NULL, '
+            'metadata TEXT)'
         )
         conn.commit()
         self._schema_ready = True
@@ -246,24 +333,26 @@ class SqliteMediaStore:
         if self._connection is None:
             conn.close()
 
-    async def put(self, data: bytes, *, media_type: str | None = None) -> str:
-        return await anyio.to_thread.run_sync(self._sync_put, data, media_type)
+    async def put(self, data: bytes, *, context: MediaContext = _EMPTY_CONTEXT) -> str:
+        return await anyio.to_thread.run_sync(self._sync_put, data, context)
 
-    def _sync_put(self, data: bytes, media_type: str | None) -> str:
+    def _sync_put(self, data: bytes, context: MediaContext) -> str:
         uri = media_uri_for(data)
         digest = parse_media_uri(uri)
+        metadata_json = json.dumps(dict(context.metadata))
         conn = self._open()
         try:
             self._ensure_schema(conn)
             conn.execute(
-                f'INSERT OR IGNORE INTO {self._table} (sha256, media_type, bytes, size_bytes) VALUES (?, ?, ?, ?)',
-                (digest, media_type, data, len(data)),
+                f'INSERT OR IGNORE INTO {self._table} '
+                '(sha256, media_type, bytes, size_bytes, metadata) VALUES (?, ?, ?, ?, ?)',
+                (digest, context.media_type, data, len(data), metadata_json),
             )
         finally:
             self._maybe_close(conn)
         return uri
 
-    async def get(self, uri: str) -> bytes:
+    async def get(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> bytes:
         digest = parse_media_uri(uri)
         return await anyio.to_thread.run_sync(self._sync_get, digest)
 
@@ -278,7 +367,7 @@ class SqliteMediaStore:
             raise FileNotFoundError(f'media not found: {digest}')
         return bytes(row[0])
 
-    async def exists(self, uri: str) -> bool:
+    async def exists(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> bool:
         digest = parse_media_uri(uri)
         return await anyio.to_thread.run_sync(self._sync_exists, digest)
 
@@ -291,5 +380,5 @@ class SqliteMediaStore:
             self._maybe_close(conn)
         return row is not None
 
-    async def public_url(self, uri: str) -> str | None:
-        return await _resolve_public_url(self._public_url_resolver, uri)
+    async def public_url(self, uri: str, *, context: MediaContext = _EMPTY_CONTEXT) -> str | None:
+        return await _resolve_public_url(self._public_url_resolver, uri, context)

@@ -10,9 +10,12 @@ URL parts before the model sees them).
 from pydantic_ai_harness.media._s3 import S3MediaStore
 from pydantic_ai_harness.media._store import (
     DiskMediaStore,
+    KeyStrategy,
+    MediaContext,
     MediaStore,
     PublicUrlResolver,
     SqliteMediaStore,
+    default_key_strategy,
     make_static_public_url,
     media_uri_for,
     parse_media_uri,
@@ -21,10 +24,13 @@ from pydantic_ai_harness.media._walker import externalize_media, restore_media
 
 __all__ = [
     'DiskMediaStore',
+    'KeyStrategy',
+    'MediaContext',
     'MediaStore',
     'PublicUrlResolver',
     'S3MediaStore',
     'SqliteMediaStore',
+    'default_key_strategy',
     'externalize_media',
     'make_static_public_url',
     'media_uri_for',

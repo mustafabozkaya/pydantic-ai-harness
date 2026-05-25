@@ -12,6 +12,7 @@ from httpx import AsyncClient, MockTransport, Request, Response
 
 from pydantic_ai_harness.media import (
     DiskMediaStore,
+    MediaContext,
     MediaStore,
     S3MediaStore,
     SqliteMediaStore,
@@ -53,9 +54,14 @@ class TestMediaUriHelpers:
 class TestDiskMediaStore:
     async def test_put_get_round_trip(self, tmp_path: Path) -> None:
         store = DiskMediaStore(tmp_path)
-        uri = await store.put(b'hello bytes', media_type='application/octet-stream')
+        uri = await store.put(b'hello bytes', context=MediaContext(media_type='application/octet-stream'))
         assert uri.startswith('media+sha256://')
         assert await store.get(uri) == b'hello bytes'
+
+    async def test_put_with_empty_context_works(self, tmp_path: Path) -> None:
+        store = DiskMediaStore(tmp_path)
+        uri = await store.put(b'no context')
+        assert await store.get(uri) == b'no context'
 
     async def test_dedup_on_repeated_put(self, tmp_path: Path) -> None:
         store = DiskMediaStore(tmp_path)
@@ -77,12 +83,45 @@ class TestDiskMediaStore:
         with pytest.raises(FileNotFoundError):
             await store.get(media_uri_for(b'never put'))
 
+    async def test_custom_key_strategy_controls_path(self, tmp_path: Path) -> None:
+        def strategy(uri: str, ctx: MediaContext) -> str:
+            return f'images/{parse_media_uri(uri)}.png'
+
+        store = DiskMediaStore(tmp_path, key_strategy=strategy)
+        uri = await store.put(b'pixels')
+        assert (tmp_path / 'images' / f'{parse_media_uri(uri)}.png').exists()
+        assert await store.get(uri) == b'pixels'
+
+    async def test_key_strategy_blocks_traversal(self, tmp_path: Path) -> None:
+        def evil(uri: str, ctx: MediaContext) -> str:
+            return '../../../etc/passwd'
+
+        store = DiskMediaStore(tmp_path, key_strategy=evil)
+        with pytest.raises(ValueError, match='traversal-unsafe'):
+            await store.put(b'attack')
+
 
 class TestSqliteMediaStore:
     async def test_put_get_round_trip(self, tmp_path: Path) -> None:
         store = SqliteMediaStore(database=tmp_path / 'media.db')
-        uri = await store.put(b'hello bytes', media_type='image/png')
+        uri = await store.put(b'hello bytes', context=MediaContext(media_type='image/png'))
         assert await store.get(uri) == b'hello bytes'
+
+    async def test_put_persists_metadata_column(self, tmp_path: Path) -> None:
+        store = SqliteMediaStore(database=tmp_path / 'media.db')
+        await store.put(
+            b'tagged',
+            context=MediaContext(media_type='image/png', metadata={'origin': 'user', 'tenant': 'acme'}),
+        )
+        conn = sqlite3.connect(tmp_path / 'media.db', check_same_thread=False)
+        try:
+            row = conn.execute('SELECT media_type, metadata FROM media').fetchone()
+        finally:
+            conn.close()
+        assert row[0] == 'image/png'
+        import json as _json
+
+        assert _json.loads(row[1]) == {'origin': 'user', 'tenant': 'acme'}
 
     async def test_with_shared_connection(self) -> None:
         connection = sqlite3.connect(':memory:', check_same_thread=False)
@@ -254,7 +293,7 @@ class TestS3MediaStoreWithMockTransport:
                 secret_access_key='secret-fake',
                 client=client,
             )
-            uri = await store.put(b'payload', media_type='image/png')
+            uri = await store.put(b'payload', context=MediaContext(media_type='image/png'))
 
         assert uri.startswith('media+sha256://')
         assert len(captured) == 1
@@ -264,6 +303,56 @@ class TestS3MediaStoreWithMockTransport:
         assert request.headers['authorization'].startswith('AWS4-HMAC-SHA256 ')
         assert request.headers['x-amz-content-sha256']
         assert request.headers['content-type'] == 'image/png'
+
+    async def test_put_propagates_metadata_as_signed_x_amz_meta_headers(self) -> None:
+        captured: list[Request] = []
+
+        async def handler(request: Request) -> Response:
+            captured.append(request)
+            return Response(200)
+
+        async with AsyncClient(transport=MockTransport(handler)) as client:
+            store = S3MediaStore(
+                bucket='b',
+                endpoint='https://example.com',
+                region='auto',
+                access_key_id='k',
+                secret_access_key='s',
+                client=client,
+            )
+            await store.put(
+                b'meta-tagged',
+                context=MediaContext(
+                    media_type='image/png',
+                    metadata={'origin': 'pipeline-a', 'tenant': 'acme'},
+                ),
+            )
+        request = captured[0]
+        assert request.headers.get('x-amz-meta-origin') == 'pipeline-a'
+        assert request.headers.get('x-amz-meta-tenant') == 'acme'
+        # Metadata headers MUST be in SignedHeaders to be valid SigV4.
+        signed = request.headers['authorization'].split('SignedHeaders=')[1].split(',')[0]
+        assert 'x-amz-meta-origin' in signed
+        assert 'x-amz-meta-tenant' in signed
+
+    async def test_put_rejects_invalid_metadata_key(self) -> None:
+        async def handler(request: Request) -> Response:  # pragma: no cover
+            return Response(200)  # never reached — validation raises pre-request
+
+        async with AsyncClient(transport=MockTransport(handler)) as client:
+            store = S3MediaStore(
+                bucket='b',
+                endpoint='https://example.com',
+                region='auto',
+                access_key_id='k',
+                secret_access_key='s',
+                client=client,
+            )
+            with pytest.raises(ValueError, match='not a valid HTTP header token'):
+                await store.put(
+                    b'data',
+                    context=MediaContext(metadata={'bad key with space': 'v'}),
+                )
 
     async def test_get_resolves_uri(self) -> None:
         async def handler(request: Request) -> Response:
@@ -407,8 +496,10 @@ class TestS3MediaStoreWithMockTransport:
         )
         await store.put(b'no-client data')
         assert len(captured) == 1
-        path = store._object_path('a' * 64)  # type: ignore[reportPrivateUsage]
-        assert path == '/my-bucket/runs/' + ('a' * 64) + '.bin'
+        sample_uri = media_uri_for(b'sample')
+        digest = parse_media_uri(sample_uri)
+        path = store._object_path(sample_uri, MediaContext())  # type: ignore[reportPrivateUsage]
+        assert path == f'/my-bucket/runs/{digest}.bin'
 
 
 @pytest.mark.skipif(  # pragma: no cover
@@ -437,7 +528,8 @@ class TestS3MediaStoreLive:  # pragma: no cover
             key_prefix='harness-test/',
         )
         payload = b'pydantic-ai-harness step-persistence live test ' + os.urandom(32)
-        uri = await store.put(payload, media_type='application/octet-stream')
+        ctx = MediaContext(media_type='application/octet-stream')
+        uri = await store.put(payload, context=ctx)
         assert await store.exists(uri) is True
         fetched = await store.get(uri)
         assert fetched == payload
@@ -473,14 +565,14 @@ class TestPublicUrl:
     async def test_sync_callable_resolver(self, tmp_path: Path) -> None:
         store = DiskMediaStore(
             tmp_path,
-            public_url=lambda uri: f'https://cdn.example.com/{parse_media_uri(uri)}.bin',
+            public_url=lambda uri, ctx: f'https://cdn.example.com/{parse_media_uri(uri)}.bin',
         )
         uri = media_uri_for(b'payload')
         result = await store.public_url(uri)
         assert result == f'https://cdn.example.com/{parse_media_uri(uri)}.bin'
 
     async def test_async_callable_resolver(self, tmp_path: Path) -> None:
-        async def signer(uri: str) -> str:
+        async def signer(uri: str, ctx: MediaContext) -> str:
             return f'https://signed.example.com/{parse_media_uri(uri)}?sig=abc'
 
         store = DiskMediaStore(tmp_path, public_url=signer)
@@ -489,9 +581,25 @@ class TestPublicUrl:
         assert result.startswith('https://signed.example.com/')
         assert '?sig=abc' in result
 
+    async def test_resolver_receives_media_context(self, tmp_path: Path) -> None:
+        """The resolver sees the full `MediaContext` so it can vary by media type, metadata, etc."""
+        seen: list[MediaContext] = []
+
+        def resolver(uri: str, ctx: MediaContext) -> str:
+            seen.append(ctx)
+            return 'https://example.com/x'
+
+        store = DiskMediaStore(tmp_path, public_url=resolver)
+        await store.public_url(
+            media_uri_for(b'p'),
+            context=MediaContext(media_type='image/png', metadata={'tag': 'v'}),
+        )
+        assert seen[0].media_type == 'image/png'
+        assert dict(seen[0].metadata) == {'tag': 'v'}
+
     async def test_resolver_can_return_none(self, tmp_path: Path) -> None:
         """Resolvers may opt out per-URI (e.g. small payloads keep inline)."""
-        store = DiskMediaStore(tmp_path, public_url=lambda uri: None)
+        store = DiskMediaStore(tmp_path, public_url=lambda uri, ctx: None)
         assert await store.public_url(media_uri_for(b'x')) is None
 
     async def test_make_static_public_url_helper(self, tmp_path: Path) -> None:

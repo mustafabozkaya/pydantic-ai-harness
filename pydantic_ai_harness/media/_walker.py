@@ -16,7 +16,7 @@ from __future__ import annotations
 import base64
 from typing import TypeGuard
 
-from pydantic_ai_harness.media._store import MediaStore
+from pydantic_ai_harness.media._store import MediaContext, MediaStore
 
 _EXTERNAL_MARKER = '__harness_external_media__'
 
@@ -85,7 +85,7 @@ async def _maybe_externalize_binary(
         return None
     media_type_value = node.get('media_type')
     media_type = media_type_value if isinstance(media_type_value, str) else None
-    uri = await media_store.put(raw, media_type=media_type)
+    uri = await media_store.put(raw, context=MediaContext(media_type=media_type))
     return {
         _EXTERNAL_MARKER: True,
         'uri': uri,

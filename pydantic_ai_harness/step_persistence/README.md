@@ -371,15 +371,71 @@ store = S3MediaStore(
 )
 ```
 
-Presigned / rotating-signature URL — pass any async callable:
+Presigned / rotating-signature URL — pass any async callable that takes
+`(uri, MediaContext)`:
 
 ```python
-async def presign(uri: str) -> str:
+from pydantic_ai_harness.media import MediaContext, S3MediaStore
+
+async def presign(uri: str, ctx: MediaContext) -> str:
     key = 'media/' + uri.removeprefix('media+sha256://') + '.bin'
-    return await my_signer.generate(key, ttl=3600)
+    return await my_signer.generate(key, ttl=3600, content_type=ctx.media_type)
 
 store = S3MediaStore(..., public_url=presign)
 ```
+
+### `MediaContext` — extensible per-operation bag
+
+Every `MediaStore` method (`put`, `get`, `exists`, `public_url`) and
+both user-supplied callables (`PublicUrlResolver`, `KeyStrategy`) accept
+a `MediaContext`:
+
+```python
+@dataclass(frozen=True, kw_only=True)
+class MediaContext:
+    media_type: str | None = None      # e.g. 'image/png'
+    filename: str | None = None        # original filename, when known
+    metadata: Mapping[str, str] = {}   # user-supplied tags
+```
+
+All fields default; new fields are added non-breakingly as use cases
+emerge. Pass what you have, ignore the rest.
+
+**Persistence by store**:
+
+- `SqliteMediaStore` writes `metadata` to a JSON column and `media_type`
+  to a dedicated column
+- `S3MediaStore` sends `metadata` as signed `x-amz-meta-*` headers
+  (ASCII alphanumeric + dash key names) and `media_type` as
+  `Content-Type`
+- `DiskMediaStore` **does not persist** `metadata` in v1 — accepts it
+  in-process (resolvers / key strategies see it) but does not write it
+  to a sidecar. Use a custom `MediaStore` subclass if you need durable
+  disk metadata
+
+### `key_strategy` — controlling the backend storage path
+
+Default is `<sha256>.bin`. Override per store to fit existing layouts:
+
+```python
+from pydantic_ai_harness.media import DiskMediaStore, MediaContext
+
+def by_media_type(uri: str, ctx: MediaContext) -> str:
+    digest = uri.removeprefix('media+sha256://')
+    ext = {'image/png': '.png', 'image/jpeg': '.jpg'}.get(ctx.media_type or '', '.bin')
+    return f'images/{digest}{ext}'
+
+store = DiskMediaStore('runs', key_strategy=by_media_type)
+```
+
+**Caveat**: if your strategy depends on `context.media_type` (e.g. to
+pick an extension), `get(uri)` and `exists(uri)` won't find the blob
+unless the same context is supplied at read time. For pure
+path-organisation strategies (no context dependency) the constraint
+doesn't apply.
+
+`DiskMediaStore` rejects strategies that produce `..`-containing paths
+to prevent traversal.
 
 `DiskMediaStore` and `SqliteMediaStore` accept the same parameter —
 useful when a local HTTP server or signed-URL service fronts the
