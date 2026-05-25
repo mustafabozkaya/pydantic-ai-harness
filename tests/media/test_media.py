@@ -16,6 +16,7 @@ from pydantic_ai_harness.media import (
     S3MediaStore,
     SqliteMediaStore,
     externalize_media,
+    make_static_public_url,
     media_uri_for,
     parse_media_uri,
     restore_media,
@@ -440,6 +441,94 @@ class TestS3MediaStoreLive:  # pragma: no cover
         assert await store.exists(uri) is True
         fetched = await store.get(uri)
         assert fetched == payload
+
+
+class TestPublicUrl:
+    """Verify `public_url` resolves through the user-supplied callable.
+
+    Static prefix, async callable, and the absence of a resolver all go
+    through the same `MediaStore.public_url(uri)` shape — the future
+    `MediaExternalizer` capability uses this to swap `BinaryContent` for
+    URL message parts before the model sees them.
+    """
+
+    async def test_disk_store_without_resolver_returns_none(self, tmp_path: Path) -> None:
+        store = DiskMediaStore(tmp_path)
+        assert await store.public_url(media_uri_for(b'x')) is None
+
+    async def test_sqlite_store_without_resolver_returns_none(self, tmp_path: Path) -> None:
+        store = SqliteMediaStore(database=tmp_path / 'm.db')
+        assert await store.public_url(media_uri_for(b'x')) is None
+
+    async def test_s3_store_without_resolver_returns_none(self) -> None:
+        store = S3MediaStore(
+            bucket='b',
+            endpoint='https://example.com',
+            region='auto',
+            access_key_id='k',
+            secret_access_key='s',
+        )
+        assert await store.public_url(media_uri_for(b'x')) is None
+
+    async def test_sync_callable_resolver(self, tmp_path: Path) -> None:
+        store = DiskMediaStore(
+            tmp_path,
+            public_url=lambda uri: f'https://cdn.example.com/{parse_media_uri(uri)}.bin',
+        )
+        uri = media_uri_for(b'payload')
+        result = await store.public_url(uri)
+        assert result == f'https://cdn.example.com/{parse_media_uri(uri)}.bin'
+
+    async def test_async_callable_resolver(self, tmp_path: Path) -> None:
+        async def signer(uri: str) -> str:
+            return f'https://signed.example.com/{parse_media_uri(uri)}?sig=abc'
+
+        store = DiskMediaStore(tmp_path, public_url=signer)
+        result = await store.public_url(media_uri_for(b'payload'))
+        assert result is not None
+        assert result.startswith('https://signed.example.com/')
+        assert '?sig=abc' in result
+
+    async def test_resolver_can_return_none(self, tmp_path: Path) -> None:
+        """Resolvers may opt out per-URI (e.g. small payloads keep inline)."""
+        store = DiskMediaStore(tmp_path, public_url=lambda uri: None)
+        assert await store.public_url(media_uri_for(b'x')) is None
+
+    async def test_make_static_public_url_helper(self, tmp_path: Path) -> None:
+        resolver = make_static_public_url('https://pub-abc.r2.dev', key_prefix='media/', extension='.bin')
+        store = DiskMediaStore(tmp_path, public_url=resolver)
+        uri = media_uri_for(b'payload')
+        digest = parse_media_uri(uri)
+        assert await store.public_url(uri) == f'https://pub-abc.r2.dev/media/{digest}.bin'
+
+    async def test_make_static_public_url_strips_trailing_slash(self, tmp_path: Path) -> None:
+        resolver = make_static_public_url('https://cdn.example.com/')
+        store = DiskMediaStore(tmp_path, public_url=resolver)
+        digest = parse_media_uri(media_uri_for(b'p'))
+        assert await store.public_url(media_uri_for(b'p')) == f'https://cdn.example.com/{digest}.bin'
+
+    async def test_s3_with_resolver_uses_it(self) -> None:
+        store = S3MediaStore(
+            bucket='b',
+            endpoint='https://example.com',
+            region='auto',
+            access_key_id='k',
+            secret_access_key='s',
+            key_prefix='media/',
+            public_url=make_static_public_url('https://pub-xyz.r2.dev', key_prefix='media/'),
+        )
+        uri = media_uri_for(b'p')
+        digest = parse_media_uri(uri)
+        assert await store.public_url(uri) == f'https://pub-xyz.r2.dev/media/{digest}.bin'
+
+    async def test_sqlite_with_resolver_uses_it(self, tmp_path: Path) -> None:
+        store = SqliteMediaStore(
+            database=tmp_path / 'm.db',
+            public_url=make_static_public_url('https://cdn.example.com'),
+        )
+        uri = media_uri_for(b'p')
+        digest = parse_media_uri(uri)
+        assert await store.public_url(uri) == f'https://cdn.example.com/{digest}.bin'
 
 
 def _assert_media_store_protocol(store: MediaStore) -> None:

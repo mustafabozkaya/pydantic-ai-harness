@@ -20,7 +20,12 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
-from pydantic_ai_harness.media._store import media_uri_for, parse_media_uri
+from pydantic_ai_harness.media._store import (
+    PublicUrlResolver,
+    _resolve_public_url,  # pyright: ignore[reportPrivateUsage]
+    media_uri_for,
+    parse_media_uri,
+)
 
 if TYPE_CHECKING:
     import httpx
@@ -142,6 +147,13 @@ class S3MediaStore:
     Pass an existing `httpx.AsyncClient` via `client=` to share connection
     pooling with the rest of your app; otherwise a fresh client is opened
     per call. Owning-vs-borrowing follows the usual httpx convention.
+
+    Pass `public_url=` to expose a URL the model can fetch directly — a
+    sync or async callable that takes a `media+sha256://<hex>` URI and
+    returns a URL (or `None`). Public-bucket / CDN setups can use
+    `make_static_public_url(...)` from `pydantic_ai_harness.media`;
+    presigned-URL users supply their own async callable that signs each
+    request fresh. Without it `public_url(...)` returns `None`.
     """
 
     def __init__(
@@ -154,6 +166,7 @@ class S3MediaStore:
         secret_access_key: str,
         key_prefix: str = '',
         client: httpx.AsyncClient | None = None,
+        public_url: PublicUrlResolver | None = None,
     ) -> None:
         self._bucket = bucket
         self._endpoint = endpoint.rstrip('/')
@@ -162,6 +175,7 @@ class S3MediaStore:
         self._secret_access_key = secret_access_key
         self._key_prefix = key_prefix
         self._client = client
+        self._public_url_resolver = public_url
 
     def _object_path(self, digest: str) -> str:
         return f'/{self._bucket}/{self._key_prefix}{digest}.bin'
@@ -226,3 +240,6 @@ class S3MediaStore:
         if response.status_code // 100 != 2:
             raise RuntimeError(f'S3 HEAD failed for {digest}: {response.status_code} {response.text[:200]}')
         return True
+
+    async def public_url(self, uri: str) -> str | None:
+        return await _resolve_public_url(self._public_url_resolver, uri)

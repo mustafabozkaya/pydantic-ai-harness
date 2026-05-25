@@ -8,8 +8,10 @@ is automatic.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import re
 import sqlite3
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -17,6 +19,54 @@ import anyio.to_thread
 
 _URI_SCHEME = 'media+sha256://'
 _HEX_RE = re.compile(r'^[0-9a-f]{64}$')
+
+PublicUrlResolver = Callable[[str], 'str | None | Awaitable[str | None]']
+"""User-supplied callable that turns a `media+sha256://<hex>` URI into a fetchable URL.
+
+Sync or async; the store auto-detects via `inspect.isawaitable` on the result.
+Return `None` to signal "no URL for this URI" (the resolver may be content-aware
+and choose to inline some payloads).
+
+Common shapes:
+
+- **Static base URL** (public bucket, CDN): `lambda uri: f'{base}/{path_from(uri)}'`.
+  See `make_static_public_url` for the boilerplate-free version.
+- **Presigned URL** (private bucket, rotating signature): async callable that
+  signs fresh on each invocation, with TTL captured in the closure.
+- **No URL available**: pass nothing — the store's `public_url(uri)` returns `None`.
+"""
+
+
+async def _resolve_public_url(resolver: PublicUrlResolver | None, uri: str) -> str | None:
+    if resolver is None:
+        return None
+    result = resolver(uri)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+def make_static_public_url(
+    base: str,
+    *,
+    key_prefix: str = '',
+    extension: str = '.bin',
+) -> Callable[[str], str]:
+    """Build a static-URL resolver for the common "public bucket / CDN" case.
+
+    The returned callable takes a `media+sha256://<hex>` URI and returns
+    `{base}/{key_prefix}<hex>{extension}`. Use this when the bytes live at a
+    known stable URL — e.g. an R2 public bucket (`https://pub-xxx.r2.dev`)
+    or a CDN in front of S3. For presigned URLs or any logic that runs per
+    request, pass your own callable instead.
+    """
+    base = base.rstrip('/')
+
+    def resolver(uri: str) -> str:
+        digest = parse_media_uri(uri)
+        return f'{base}/{key_prefix}{digest}{extension}'
+
+    return resolver
 
 
 def media_uri_for(data: bytes) -> str:
@@ -52,6 +102,14 @@ class MediaStore(Protocol):
 
     `media_type` is advisory metadata (e.g. `image/png`); stores are free to
     persist or ignore it. The hash never depends on it.
+
+    `public_url(uri)` returns a URL the model can fetch directly, or `None`
+    if the store can't or hasn't been configured to produce one. The forthcoming
+    `MediaExternalizer` capability uses this to rewrite `BinaryContent` parts
+    to `ImageUrl`/`AudioUrl`/etc. before the model sees the message. Both
+    static (CDN, public bucket) and dynamic (presigned, rotating signature)
+    URLs fit the same shape — the concrete stores accept a user-supplied
+    `PublicUrlResolver` callable.
     """
 
     async def put(self, data: bytes, *, media_type: str | None = None) -> str: ...  # pragma: no cover
@@ -60,16 +118,28 @@ class MediaStore(Protocol):
 
     async def exists(self, uri: str) -> bool: ...  # pragma: no cover
 
+    async def public_url(self, uri: str) -> str | None: ...  # pragma: no cover
+
 
 class DiskMediaStore:
     """Filesystem store. One file per blob at `<directory>/<sha256>.bin`.
 
     Directory is created on first write. Dedup is automatic via the
     content-hash filename.
+
+    Pass `public_url=` to expose a URL for each blob — useful when a local
+    HTTP server fronts the directory. Without it `public_url(...)` returns
+    `None` (local filesystem paths are not addressable from a model).
     """
 
-    def __init__(self, directory: str | Path) -> None:
+    def __init__(
+        self,
+        directory: str | Path,
+        *,
+        public_url: PublicUrlResolver | None = None,
+    ) -> None:
         self._root = Path(directory)
+        self._public_url_resolver = public_url
 
     def _path_for(self, digest: str) -> Path:
         return self._root / f'{digest}.bin'
@@ -105,6 +175,9 @@ class DiskMediaStore:
     def _sync_exists(self, digest: str) -> bool:
         return self._path_for(digest).exists()
 
+    async def public_url(self, uri: str) -> str | None:
+        return await _resolve_public_url(self._public_url_resolver, uri)
+
 
 class SqliteMediaStore:
     """SQLite store. One row per blob in a `media` table keyed by sha256 hex.
@@ -135,6 +208,7 @@ class SqliteMediaStore:
         database: str | Path | None = None,
         connection: sqlite3.Connection | None = None,
         table: str = 'media',
+        public_url: PublicUrlResolver | None = None,
     ) -> None:
         if (database is None) == (connection is None):
             raise ValueError('provide exactly one of `database=` or `connection=`')
@@ -144,6 +218,7 @@ class SqliteMediaStore:
             raise ValueError(f'invalid table name: {table!r}')
         self._table = table
         self._schema_ready = False
+        self._public_url_resolver = public_url
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         if self._schema_ready:
@@ -215,3 +290,6 @@ class SqliteMediaStore:
         finally:
             self._maybe_close(conn)
         return row is not None
+
+    async def public_url(self, uri: str) -> str | None:
+        return await _resolve_public_url(self._public_url_resolver, uri)

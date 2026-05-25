@@ -11,7 +11,9 @@ from pydantic_ai_harness.media._s3 import S3MediaStore
 from pydantic_ai_harness.media._store import (
     DiskMediaStore,
     MediaStore,
+    PublicUrlResolver,
     SqliteMediaStore,
+    make_static_public_url,
     media_uri_for,
     parse_media_uri,
 )
@@ -20,9 +22,11 @@ from pydantic_ai_harness.media._walker import externalize_media, restore_media
 __all__ = [
     'DiskMediaStore',
     'MediaStore',
+    'PublicUrlResolver',
     'S3MediaStore',
     'SqliteMediaStore',
     'externalize_media',
+    'make_static_public_url',
     'media_uri_for',
     'parse_media_uri',
     'restore_media',

@@ -347,14 +347,54 @@ implementations are:
   R2 (`region='auto'`), MinIO, and other S3-compatible providers. PUT/GET/HEAD
   only — no multipart, lifecycle, or listing in v1.
 
-> **Note on the future `MediaExternalizer` capability.** The
-> `MediaStore` protocol shipped here is also the substrate for a
-> separate capability (planned, not in this release) that rewrites
-> `BinaryContent` to URL parts **before** the model sees them, reducing
-> wire payload and token cost. When that lands, the composition will be
+### Exposing externalized bytes as URLs
+
+Each store accepts a `public_url=` callable that turns the canonical
+`media+sha256://<hex>` URI into a URL the model can fetch directly. The
+forthcoming `MediaExternalizer` capability will use this to swap
+`BinaryContent` parts for `ImageUrl` / `AudioUrl` / etc. before the
+model sees the message — letting providers fetch big media over the wire
+without re-encoding bytes into the request body.
+
+Static base URL (public R2 bucket, CDN):
+
+```python
+from pydantic_ai_harness.media import S3MediaStore, make_static_public_url
+
+store = S3MediaStore(
+    bucket='my-bucket',
+    endpoint='https://<acc>.r2.cloudflarestorage.com',
+    region='auto',
+    access_key_id=..., secret_access_key=...,
+    key_prefix='media/',
+    public_url=make_static_public_url('https://pub-abc.r2.dev', key_prefix='media/'),
+)
+```
+
+Presigned / rotating-signature URL — pass any async callable:
+
+```python
+async def presign(uri: str) -> str:
+    key = 'media/' + uri.removeprefix('media+sha256://') + '.bin'
+    return await my_signer.generate(key, ttl=3600)
+
+store = S3MediaStore(..., public_url=presign)
+```
+
+`DiskMediaStore` and `SqliteMediaStore` accept the same parameter —
+useful when a local HTTP server or signed-URL service fronts the
+directory / DB. Without it `public_url(...)` returns `None` (the model
+never sees a URL unless a resolver is configured and it returns a string).
+
+pyai providers transparently download bytes from a URL when the target
+model doesn't natively accept that URL type, so emitting a URL is
+always safe — you only ever lose wire savings, never correctness.
+
+> **Note on the future `MediaExternalizer` capability.** When it lands,
+> the composition will be
 > `Agent(capabilities=[MediaExternalizer(store), StepPersistence(...)])`
-> and `StepPersistence` will see already-URL-ified messages — externalize
-> walk becomes a no-op. The existing API does not change.
+> and `StepPersistence` will see already-URL-ified messages — the
+> externalize walk becomes a no-op. The existing API does not change.
 
 ### Persisting unsupported backends
 
