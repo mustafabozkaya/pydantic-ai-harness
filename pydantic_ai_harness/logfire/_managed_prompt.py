@@ -140,7 +140,7 @@ class ManagedPrompt(AbstractCapability[AgentDepsT]):
                 'slugs may only contain letters, digits, hyphens, and underscores.'
             )
 
-        # Construct the variable directly (rather than via `logfire.var`) so re-declaring the
+        # Construct the variable directly (rather than via `logfire.var`) so redeclaring the
         # same slug is idempotent: `logfire.var` registers in a per-instance registry and raises
         # on a duplicate name, which would break sharing one prompt across agents.
         instance = self.logfire_instance if self.logfire_instance is not None else logfire.DEFAULT_LOGFIRE_INSTANCE
