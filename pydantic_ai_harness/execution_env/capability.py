@@ -18,6 +18,7 @@ from ..environments.exceptions import (
     EnvFileWriteError,
     PathEscapeError,
 )
+from ._truncate import DEFAULT_MAX_BYTES, format_size, truncate_head
 
 
 @dataclass
@@ -87,7 +88,43 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
             end = min(start + limit, total_lines) if limit is not None else total_lines
             window = lines[start:end]
 
-            return '\n'.join(window)
+            result = truncate_head(window)
+            # 1-indexed line the window starts on, for the continuation notes.
+            start_display = start + 1
+
+            if result.first_line_exceeded:
+                # Can't show even one line without blowing the byte cap, and we never
+                # split a line. pi points at a `bash sed` fallback; we have no shell tool
+                # yet, so we just report the size and omit it.
+                # TODO: add the sed/head-c hint once the shell tool lands (Slice 4).
+                line_size = format_size(len(lines[start].encode('utf-8')))
+                return f'[Line {start_display} is {line_size}, exceeds the {format_size(DEFAULT_MAX_BYTES)} limit and was omitted.]'
+
+            body = '\n'.join(result.truncated_lines)
+
+            if result.truncated:
+                # The safety cap stopped us. Point the model at the exact next line.
+                end_display = start_display + len(result.truncated_lines) - 1
+                next_offset = end_display + 1
+                if result.truncated_by == 'bytes':
+                    note = (
+                        f'[Showing lines {start_display}-{end_display} of {total_lines} '
+                        f'({format_size(DEFAULT_MAX_BYTES)} limit). Use offset={next_offset} to continue.]'
+                    )
+                else:
+                    note = (
+                        f'[Showing lines {start_display}-{end_display} of {total_lines}. '
+                        f'Use offset={next_offset} to continue.]'
+                    )
+                return f'{body}\n\n{note}'
+
+            if limit is not None and end < total_lines:
+                # The model's own limit stopped us early (not the safety cap); tell it
+                # there's more and where to resume.
+                remaining = total_lines - end
+                return f'{body}\n\n[{remaining} more lines in file. Use offset={end + 1} to continue.]'
+
+            return body
 
         async def write_file(
             path: Annotated[str, Field(description='Path to the file, relative to the workspace root.')],
