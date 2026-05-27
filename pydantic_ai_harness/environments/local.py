@@ -33,13 +33,15 @@ class LocalEnvironment(AbstractEnvironment):
 
         try:
             return resolved_path.read_bytes()
-        except FileNotFoundError:
-            raise EnvFileNotFoundError(f'{path!r} not found in the environment root {self.root!r}')
-        except PermissionError:
-            raise EnvFilePermissionError(f'{path!r} is not readable by the environment root {self.root!r}')
-        except IsADirectoryError:
-            raise EnvFileIsADirectoryError(f'{path!r} is a directory in the environment root {self.root!r}')
-        except NotADirectoryError:
-            raise EnvFileNotADirectoryError(f'{path!r} is not a directory in the environment root {self.root!r}')
-        except OSError:
-            raise EnvFileReadError(f'{path!r} could not be read in the environment root {self.root!r}')
+        except FileNotFoundError as e:
+            raise EnvFileNotFoundError(f'{path!r} not found in the environment root {self.root!r}: {str(e)}')
+        except PermissionError as e:
+            raise EnvFilePermissionError(f'{path!r} is not readable by the environment root {self.root!r}: {str(e)}')
+        except IsADirectoryError as e:
+            raise EnvFileIsADirectoryError(f'{path!r} is a directory in the environment root {self.root!r}: {str(e)}')
+        except NotADirectoryError as e:
+            raise EnvFileNotADirectoryError(
+                f'{path!r} is not a directory in the environment root {self.root!r}: {str(e)}'
+            )
+        except OSError as e:
+            raise EnvFileReadError(f'{path!r} could not be read in the environment root {self.root!r}: {str(e)}')
