@@ -14,7 +14,7 @@ from .exceptions import (
 )
 
 
-@dataclass
+@dataclass(kw_only=True)
 class LocalEnvironment(AbstractEnvironment):
     """Local environment using the local filesystem."""
 
