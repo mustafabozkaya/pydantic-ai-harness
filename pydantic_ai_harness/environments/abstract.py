@@ -29,7 +29,7 @@ class AbstractEnvironment(ABC):
             EnvFilePermissionError: The backend may not read `path`.
             EnvFileReadError: Any other I/O failure (nothing builtin leaks).
         """
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover
 
     @abstractmethod
     async def write_file(self, path: str, data: bytes) -> None:
@@ -44,4 +44,4 @@ class AbstractEnvironment(ABC):
             EnvFilePermissionError: The backend may not write `path`.
             EnvFileWriteError: Any other I/O failure (nothing builtin leaks).
         """
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover
