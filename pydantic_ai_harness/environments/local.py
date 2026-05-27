@@ -1,5 +1,6 @@
 """Local environment using the local filesystem."""
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,7 +82,13 @@ class LocalEnvironment(AbstractEnvironment):
             raise PathEscapeError(f'{path!r} resolves outside the environment root {self.root!r}')
 
         try:
-            return [AbstractFile(name=file.name, is_directory=file.is_dir()) for file in resolved_path.iterdir()]
+            # `os.scandir` returns the entry type that the underlying directory read (`getdents`)
+            # already carried, so `is_dir(follow_symlinks=False)` answers from that cached type
+            # without an extra `stat` per entry -- one round-trip for the whole listing, which is
+            # what keeps `ls` cheap on remote backends. `Path.iterdir()` discards that type and
+            # would force a `stat` per entry. `follow_symlinks=False` classifies the entry itself,
+            # so a broken symlink is simply "not a directory" rather than a `stat` that raises.
+            with os.scandir(resolved_path) as entries:
+                return [AbstractFile(name=e.name, is_directory=e.is_dir(follow_symlinks=False)) for e in entries]
         except PermissionError as e:
             raise EnvFilePermissionError(f'{path!r} is not listable by the environment root {self.root!r}: {str(e)}')
-        # I am not sure if any other errors are possible here anyway?
