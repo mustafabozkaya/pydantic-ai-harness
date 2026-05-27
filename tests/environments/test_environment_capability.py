@@ -95,7 +95,6 @@ class _BytesEnvironment(AbstractEnvironment):
 async def _call_read_file(environment: AbstractEnvironment, path: str = 'f.txt') -> object:
     """Invoke the capability's `read_file` tool directly through its toolset."""
     toolset = ExecutionEnv(environment=environment).get_toolset()
-    assert toolset is not None
     ctx: RunContext[None] = RunContext(deps=None, model=TestModel(), usage=RunUsage())
     tools = await toolset.get_tools(ctx)
     return await toolset.call_tool('read_file', {'path': path}, ctx, tools['read_file'])
