@@ -16,6 +16,7 @@ from ..environments.exceptions import (
     EnvFileNotFoundError,
     EnvFilePermissionError,
     EnvFileReadError,
+    PathEscapeError,
 )
 
 
@@ -35,7 +36,6 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
             """Read a file from the execution environment."""
             try:
                 bytes = await self.environment.read_file(path)
-
                 return bytes.decode('utf-8')
 
             except (
@@ -43,11 +43,21 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
                 EnvFilePermissionError,
                 EnvFileIsADirectoryError,
                 EnvFileNotADirectoryError,
+                PathEscapeError,
             ) as e:
-                raise ModelRetry(f'{str(e)}')
+                # TODO(observability): PathEscapeError is the one security-relevant
+                # case here (a boundary-crossing attempt). When we design the
+                # observability story, consider emitting a Logfire/OTel span or event
+                # for it before retrying -- NOT stdlib logging or warnings.warn
+                # (pydantic-ai uses neither for runtime events).
+                raise ModelRetry(f'{str(e)}') from e
             except (EnvFileReadError,):
+                # TODO: This should be a ToolFailed error when I merge that in
+                # catching and re raising here to show the boundary where we change it
                 raise
+            except UnicodeDecodeError as e:
+                raise ModelRetry(f'{str(e)}') from e
 
-        toolset.add_function(read_file, name='read_file', description='Read a file from the execution environment.')
+        toolset.add_function(read_file, description='Read a file from the execution environment.')
 
         return toolset

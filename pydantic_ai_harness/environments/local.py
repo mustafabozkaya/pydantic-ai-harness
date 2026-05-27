@@ -27,7 +27,7 @@ class LocalEnvironment(AbstractEnvironment):
         # and the read_bytes() below are two separate steps. A symlink swapped in
         # between could redirect the read outside `root`. Accepted for V1 -- a
         # race-free jail needs openat2/O_NOFOLLOW-style primitives. Revisit during
-        # hardening (Slice 6). TODO: deepen understanding before relying on this.
+        # hardening. TODO: deepen understanding before relying on this.
         if not resolved_path.is_relative_to(root):
             raise PathEscapeError(f'{path!r} resolves outside the environment root {self.root!r}')
 
