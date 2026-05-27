@@ -34,8 +34,8 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
         ) -> str:
             """Read a file from the execution environment."""
             try:
-                bytes = await self.environment.read_file(path)
-                return bytes.decode('utf-8')
+                data = await self.environment.read_file(path)
+                return data.decode('utf-8')
 
             except (
                 EnvFileNotFoundError,
