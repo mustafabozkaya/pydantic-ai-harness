@@ -110,7 +110,7 @@ quote-style = 'single'
 [tool.pyright]
 pythonVersion = '3.10'
 typeCheckingMode = 'strict'
-exclude = ['template', '.venv']
+exclude = ['template', '.venv', 'mutants']
 executionEnvironments = [
     { root = 'tests', reportPrivateUsage = false },
 ]
@@ -122,9 +122,6 @@ filterwarnings = [
     'error',
     # DBOS's run_sync triggers this on Python 3.12+ — not our code.
     'ignore:There is no current event loop:DeprecationWarning',
-    # anyio subprocess cleanup can trigger these on some Python versions during GC.
-    'ignore::pytest.PytestUnraisableExceptionWarning',
-    'ignore::ResourceWarning',
 ]
 anyio_mode = 'auto'
 

@@ -25,35 +25,19 @@ _DEFAULT_DENIED_COMMANDS: list[str] = [
     'init',
 ]
 
-_DEFAULT_DENIED_OPERATORS: list[str] = []
-
 
 @dataclass
 class Shell(AbstractCapability[Any]):
-    """Gives an agent the ability to run shell commands.
+    """Shell command execution for agents.
 
-    Commands execute in a subprocess rooted at ``cwd``. Use ``allowed_commands``
-    or ``denied_commands`` to control what the agent can invoke. Output is
-    automatically truncated to keep model context manageable.
-
-    Example::
-
-        from pydantic_ai import Agent
-        from pydantic_ai_harness.shell import Shell
-
-        agent = Agent('openai:gpt-4o', capabilities=[Shell(cwd='.')])
-
-        # Only allow specific commands
-        agent = Agent(
-            'openai:gpt-4o',
-            capabilities=[Shell(allowed_commands=['ls', 'cat', 'grep', 'find'])]
-        )
+    Commands execute in a subprocess rooted at `cwd`. Use `allowed_commands`
+    or `denied_commands` to control what the agent can invoke.
     """
 
     cwd: str | Path = '.'
     """Working directory for command execution."""
 
-    allowed_commands: Sequence[str] = field(default_factory=lambda: list[str]())
+    allowed_commands: Sequence[str] = field(default_factory=list[str])
     """If non-empty, only these command names may be executed (allowlist)."""
 
     denied_commands: Sequence[str] = field(default_factory=lambda: list(_DEFAULT_DENIED_COMMANDS))
@@ -63,7 +47,7 @@ class Shell(AbstractCapability[Any]):
     Set to an empty list to disable.
     """
 
-    denied_operators: Sequence[str] = field(default_factory=lambda: list(_DEFAULT_DENIED_OPERATORS))
+    denied_operators: Sequence[str] = field(default_factory=list[str])
     """Shell operators that are blocked (e.g. '>', '>>', '|' for restrictive mode)."""
 
     default_timeout: float = 30.0

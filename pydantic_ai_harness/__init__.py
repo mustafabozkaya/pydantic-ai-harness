@@ -1,4 +1,4 @@
-"""The batteries for your Pydantic AI agent -- the official capability library."""
+"""Pydantic AI capability library."""
 
 from typing import TYPE_CHECKING
 
@@ -15,11 +15,11 @@ def __getattr__(name: str) -> object:
         from .code_mode import CodeMode
 
         return CodeMode
-    if name == 'FileSystem':
+    elif name == 'FileSystem':
         from .filesystem import FileSystem
 
         return FileSystem
-    if name == 'Shell':
+    elif name == 'Shell':
         from .shell import Shell
 
         return Shell

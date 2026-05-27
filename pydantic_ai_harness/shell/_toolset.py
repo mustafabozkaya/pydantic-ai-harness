@@ -96,6 +96,17 @@ class ShellToolset(FunctionToolset[Any]):
         self.add_function(self.check_command, name='check_command')
         self.add_function(self.stop_command, name='stop_command')
 
+    async def __aexit__(self, *args: Any) -> None:
+        """Terminate all remaining background processes and clean up temp files."""
+        for bg in self._background.values():
+            if not bg.finished:
+                await self._kill_process_group(bg.proc)
+                with anyio.CancelScope(shield=True):
+                    await bg.proc.wait()
+                await bg.proc.aclose()
+            self._cleanup_bg_files(bg)
+        self._background.clear()
+
     def _check_command(self, command: str) -> None:
         """Validate command against allow/deny lists."""
         if not self._allow_interactive and _is_interactive_command(command):
@@ -131,7 +142,13 @@ class ShellToolset(FunctionToolset[Any]):
         return truncated
 
     def _wrap_command_for_cwd(self, command: str) -> str:
-        """Append pwd sentinel to command for cwd tracking."""
+        """Append pwd sentinel to command for cwd tracking.
+
+        Commands containing ';' are returned unwrapped because the separator
+        breaks the '&&' success-gating of the sentinel echo.
+        """
+        if ';' in command:
+            return command
         return f'{command} && echo {_PWD_SENTINEL}$(pwd)'
 
     def _extract_cwd_from_output(self, stdout: str) -> tuple[str, Path | None]:
@@ -280,6 +297,9 @@ class ShellToolset(FunctionToolset[Any]):
     async def start_command(self, command: str) -> str:
         """Start a long-running command in the background (e.g. a server or watcher).
 
+        Callers MUST call `stop_command(command_id)` when done to terminate the
+        process and clean up temporary output files.
+
         Args:
             command: The shell command to run in the background.
 
@@ -292,13 +312,20 @@ class ShellToolset(FunctionToolset[Any]):
         stdout_file = tempfile.NamedTemporaryFile(mode='w+b', prefix=f'harness_{command_id}_out_', delete=False)
         stderr_file = tempfile.NamedTemporaryFile(mode='w+b', prefix=f'harness_{command_id}_err_', delete=False)
 
-        proc = await anyio.open_process(
-            command,
-            cwd=self._cwd,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            start_new_session=True,
-        )
+        try:
+            proc = await anyio.open_process(
+                command,
+                cwd=self._cwd,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                start_new_session=True,
+            )
+        except BaseException:
+            stdout_file.close()
+            stderr_file.close()
+            os.unlink(stdout_file.name)
+            os.unlink(stderr_file.name)
+            raise
 
         stdout_file.close()
         stderr_file.close()
@@ -359,11 +386,14 @@ class ShellToolset(FunctionToolset[Any]):
         parts = [f'[status: {status}]']
         if bg.finished and bg.exit_code is not None:
             parts.append(f'[exit code: {bg.exit_code}]')
+        output_sections: list[str] = []
         if stdout:
-            parts.append(f'[stdout]\n{self._truncate(stdout)}')
+            output_sections.append(f'[stdout]\n{stdout}')
         if stderr:
-            parts.append(f'[stderr]\n{self._truncate(stderr)}')
-        if not stdout and not stderr:
+            output_sections.append(f'[stderr]\n{stderr}')
+        if output_sections:
+            parts.append(self._truncate('\n'.join(output_sections)))
+        else:
             parts.append('(no output yet)')
 
         return '\n'.join(parts)
@@ -397,11 +427,14 @@ class ShellToolset(FunctionToolset[Any]):
         parts = [f'[stopped: {bg.command!r}]']
         if bg.exit_code is not None:
             parts.append(f'[exit code: {bg.exit_code}]')
+        output_sections: list[str] = []
         if stdout:
-            parts.append(f'[stdout]\n{self._truncate(stdout)}')
+            output_sections.append(f'[stdout]\n{stdout}')
         if stderr:
-            parts.append(f'[stderr]\n{self._truncate(stderr)}')
-        if not stdout and not stderr:
+            output_sections.append(f'[stderr]\n{stderr}')
+        if output_sections:
+            parts.append(self._truncate('\n'.join(output_sections)))
+        else:
             parts.append('(no output)')
 
         return '\n'.join(parts)

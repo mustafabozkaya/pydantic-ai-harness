@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import anyio
 import pytest
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
@@ -16,8 +19,10 @@ from pydantic_ai_harness.shell._toolset import (
     _is_interactive_command,
 )
 
-# ============================================================================
-# ============================================================================
+
+def _parse_command_id(result: str) -> str:
+    assert 'ID: ' in result, f'Expected "ID: " in result: {result!r}'
+    return result.split('ID: ')[1].strip()
 
 
 class TestIsInteractiveCommand:
@@ -81,13 +86,8 @@ class TestIsInteractiveCommand:
         assert _is_interactive_command('  sudo rm') is True
 
 
-# ============================================================================
-# ============================================================================
-
-
 @pytest.fixture
 def shell_dir(tmp_path: Path) -> Path:
-    """Create a temporary directory for shell tests."""
     (tmp_path / 'test.txt').write_text('hello\n')
     (tmp_path / 'subdir').mkdir()
     (tmp_path / 'subdir' / 'nested.txt').write_text('nested\n')
@@ -96,7 +96,6 @@ def shell_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def toolset(shell_dir: Path) -> ShellToolset:
-    """Create a basic ShellToolset."""
     return ShellToolset(
         cwd=shell_dir,
         allowed_commands=[],
@@ -451,24 +450,6 @@ class TestRunCommand:
         result = await toolset.run_command('echo ok')
         assert 'exit code' not in result
 
-    async def test_timeout(self, shell_dir: Path) -> None:
-        ts = ShellToolset(
-            cwd=shell_dir,
-            allowed_commands=[],
-            denied_commands=[],
-            denied_operators=[],
-            default_timeout=0.5,
-            max_output_chars=50_000,
-            persist_cwd=False,
-            allow_interactive=False,
-        )
-        result = await ts.run_command('sleep 10')
-        assert 'timed out' in result
-
-    async def test_custom_timeout(self, toolset: ShellToolset) -> None:
-        result = await toolset.run_command('sleep 10', timeout_seconds=0.5)
-        assert 'timed out' in result
-
     async def test_no_output(self, toolset: ShellToolset) -> None:
         result = await toolset.run_command('true')
         assert result == '(no output)'
@@ -576,10 +557,6 @@ class TestRunCommand:
         result = await toolset.run_command('exit 1')
         assert '[exit code: 1]' in result
 
-    async def test_zero_exit_no_code(self, toolset: ShellToolset) -> None:
-        result = await toolset.run_command('echo success')
-        assert 'exit code' not in result
-
     async def test_stdout_stderr_separated_by_newline(self, toolset: ShellToolset) -> None:
         result = await toolset.run_command('echo out && echo err >&2')
         assert '[stdout]\nout\n\n[stderr]\nerr' in result
@@ -599,10 +576,6 @@ class TestRunCommand:
     async def test_stdout_chunk_join(self, toolset: ShellToolset) -> None:
         result = await toolset.run_command(f"{sys.executable} -c \"print('A' * 100 + 'B' * 100)\"")
         assert 'A' * 100 + 'B' * 100 in result
-
-    async def test_exact_no_output_message(self, toolset: ShellToolset) -> None:
-        result = await toolset.run_command('true')
-        assert result == '(no output)'
 
     async def test_exit_code_fallback_to_zero(self, shell_dir: Path) -> None:
         ts = ShellToolset(
@@ -739,7 +712,7 @@ class TestProcessGroupKill:
         assert 'timed out' in result
 
     async def test_start_new_session_used(self, shell_dir: Path) -> None:
-        """Verify the process gets its own session (child is process group leader)."""
+        """Verify the child is in a different process group from the parent."""
         ts = ShellToolset(
             cwd=shell_dir,
             allowed_commands=[],
@@ -750,7 +723,8 @@ class TestProcessGroupKill:
             persist_cwd=False,
             allow_interactive=False,
         )
-        result = await ts.run_command(f'{sys.executable} -c "import os; print(os.getpgid(0) == os.getpid())"')
+        parent_pgrp = os.getpgrp()
+        result = await ts.run_command(f'{sys.executable} -c "import os; print(os.getpgrp() != {parent_pgrp})"')
         assert 'True' in result
 
 
@@ -769,7 +743,7 @@ class TestBackgroundCommands:
         result = await ts.start_command('sleep 100')
         assert 'ID:' in result
         assert 'Started background command' in result
-        command_id = result.split('ID: ')[1].strip()
+        command_id = _parse_command_id(result)
         await ts.stop_command(command_id)
 
     async def test_check_unknown_id(self, toolset: ShellToolset) -> None:
@@ -792,9 +766,7 @@ class TestBackgroundCommands:
             allow_interactive=False,
         )
         start_result = await ts.start_command('echo hello_bg')
-        command_id = start_result.split('ID: ')[1].strip()
-
-        import anyio
+        command_id = _parse_command_id(start_result)
 
         await anyio.sleep(0.5)
 
@@ -814,7 +786,7 @@ class TestBackgroundCommands:
             allow_interactive=False,
         )
         start_result = await ts.start_command('sleep 100')
-        command_id = start_result.split('ID: ')[1].strip()
+        command_id = _parse_command_id(start_result)
 
         check_result = await ts.check_command(command_id)
         assert 'running' in check_result
@@ -833,9 +805,7 @@ class TestBackgroundCommands:
             allow_interactive=False,
         )
         start_result = await ts.start_command('echo done_quick')
-        command_id = start_result.split('ID: ')[1].strip()
-
-        import anyio
+        command_id = _parse_command_id(start_result)
 
         await anyio.sleep(0.5)
 
@@ -871,9 +841,7 @@ class TestBackgroundCommands:
             allow_interactive=False,
         )
         start_result = await ts.start_command('echo err_bg >&2')
-        command_id = start_result.split('ID: ')[1].strip()
-
-        import anyio
+        command_id = _parse_command_id(start_result)
 
         await anyio.sleep(0.5)
 
@@ -892,9 +860,7 @@ class TestBackgroundCommands:
             allow_interactive=False,
         )
         start_result = await ts.start_command('true')
-        command_id = start_result.split('ID: ')[1].strip()
-
-        import anyio
+        command_id = _parse_command_id(start_result)
 
         await anyio.sleep(0.5)
 
@@ -913,10 +879,32 @@ class TestBackgroundCommands:
             allow_interactive=False,
         )
         start_result = await ts.start_command('sleep 100')
-        command_id = start_result.split('ID: ')[1].strip()
+        command_id = _parse_command_id(start_result)
 
         check_result = await ts.check_command(command_id)
         assert 'no output yet' in check_result
+
+        await ts.stop_command(command_id)
+
+    async def test_check_command_captures_stderr(self, shell_dir: Path) -> None:
+        ts = ShellToolset(
+            cwd=shell_dir,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=10.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        start_result = await ts.start_command('echo err_check >&2')
+        command_id = _parse_command_id(start_result)
+
+        await anyio.sleep(0.5)
+
+        check_result = await ts.check_command(command_id)
+        assert '[stderr]' in check_result
+        assert 'err_check' in check_result
 
         await ts.stop_command(command_id)
 
@@ -932,9 +920,7 @@ class TestBackgroundCommands:
             allow_interactive=False,
         )
         start_result = await ts.start_command('pwd')
-        command_id = start_result.split('ID: ')[1].strip()
-
-        import anyio
+        command_id = _parse_command_id(start_result)
 
         await anyio.sleep(0.5)
 
@@ -954,9 +940,7 @@ class TestBackgroundCommands:
             allow_interactive=False,
         )
         start_result = await ts.start_command('true')
-        command_id = start_result.split('ID: ')[1].strip()
-
-        import anyio
+        command_id = _parse_command_id(start_result)
 
         await anyio.sleep(0.5)
 
@@ -966,9 +950,82 @@ class TestBackgroundCommands:
         check_result = await ts.check_command(command_id)
         assert 'unknown command ID' in check_result
 
+    async def test_start_command_cleans_temp_files_on_failure(self, shell_dir: Path) -> None:
+        ts = ShellToolset(
+            cwd=shell_dir,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=10.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        with patch('anyio.open_process', side_effect=OSError('spawn failed')):
+            with pytest.raises(OSError, match='spawn failed'):
+                await ts.start_command('echo hi')
+        assert not ts._background
 
-# ============================================================================
-# ============================================================================
+    async def test_aexit_terminates_background_processes(self, shell_dir: Path) -> None:
+        ts = ShellToolset(
+            cwd=shell_dir,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=10.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        result = await ts.start_command('sleep 300')
+        command_id = _parse_command_id(result)
+        bg = ts._background[command_id]
+        stdout_path = Path(bg.stdout_path)
+        stderr_path = Path(bg.stderr_path)
+        assert stdout_path.exists()
+        assert stderr_path.exists()
+
+        await ts.__aexit__(None, None, None)
+
+        assert not ts._background
+        assert not stdout_path.exists()
+        assert not stderr_path.exists()
+
+    async def test_aexit_noop_when_no_background(self, shell_dir: Path) -> None:
+        ts = ShellToolset(
+            cwd=shell_dir,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=10.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        await ts.__aexit__(None, None, None)
+        assert not ts._background
+
+    async def test_aexit_cleans_already_finished_process(self, shell_dir: Path) -> None:
+        ts = ShellToolset(
+            cwd=shell_dir,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=10.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        result = await ts.start_command('echo done')
+        command_id = _parse_command_id(result)
+        await anyio.sleep(0.5)
+        # Mark as finished via check_command
+        await ts.check_command(command_id)
+        bg = ts._background[command_id]
+        assert bg.finished
+
+        await ts.__aexit__(None, None, None)
+        assert not ts._background
 
 
 class TestEdgeCases:
@@ -1032,7 +1089,7 @@ class TestEdgeCases:
         result = await ts.run_command('echo test')
         assert _PWD_SENTINEL not in result
 
-    async def test_start_new_session_true(self, shell_dir: Path) -> None:
+    async def test_persist_cwd_semicolon_skips_sentinel(self, shell_dir: Path) -> None:
         ts = ShellToolset(
             cwd=shell_dir,
             allowed_commands=[],
@@ -1040,15 +1097,13 @@ class TestEdgeCases:
             denied_operators=[],
             default_timeout=10.0,
             max_output_chars=50_000,
-            persist_cwd=False,
+            persist_cwd=True,
             allow_interactive=False,
         )
-        result = await ts.run_command(f'{sys.executable} -c "import os; print(os.getpgid(0) == os.getpid())"')
-        assert 'True' in result
-
-
-# ============================================================================
-# ============================================================================
+        original_cwd = ts._cwd
+        result = await ts.run_command('echo a ; echo b')
+        assert _PWD_SENTINEL not in result
+        assert ts._cwd == original_cwd
 
 
 class TestShellCapability:
@@ -1080,7 +1135,281 @@ class TestShellCapability:
 
     @pytest.mark.anyio(backends=['asyncio'])
     async def test_agent_integration(self, tmp_path: Path) -> None:
+        import sniffio
+
+        if sniffio.current_async_library() != 'asyncio':  # pragma: no cover
+            pytest.skip('Agent.run() requires asyncio')
         model = TestModel(custom_output_text='done', call_tools=[])
         agent: Agent[None, str] = Agent(model, capabilities=[Shell(cwd=tmp_path)])
         result = await agent.run('run echo hello')
         assert result.output == 'done'
+
+
+class TestKillProcessGroupEdgeCases:
+    async def test_sigterm_raises_process_lookup_error(self, tmp_path: Path) -> None:
+        """When SIGTERM raises ProcessLookupError, method returns without SIGKILL."""
+        ts = ShellToolset(
+            cwd=tmp_path,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=5.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        proc = MagicMock()
+        proc.pid = 99999
+        with patch('os.killpg', side_effect=ProcessLookupError):
+            await ts._kill_process_group(proc)
+        # No exception raised, method returned early
+
+    async def test_sigkill_escalation(self, tmp_path: Path) -> None:
+        """When process doesn't exit within grace period, SIGKILL is sent."""
+        ts = ShellToolset(
+            cwd=tmp_path,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=5.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        proc = MagicMock()
+        proc.pid = 99999
+
+        # Make proc.wait() never complete (simulates process ignoring SIGTERM)
+        async def never_return() -> None:
+            await anyio.sleep(999)
+
+        proc.wait = never_return
+
+        import signal
+
+        kill_calls: list[tuple[int, int]] = []
+
+        def fake_killpg(pgid: int, sig: int) -> None:
+            kill_calls.append((pgid, sig))
+
+        with (
+            patch('os.killpg', side_effect=fake_killpg),
+            patch('os.getpgid', return_value=12345),
+            patch('pydantic_ai_harness.shell._toolset._KILL_GRACE_PERIOD', 0.01),
+        ):
+            await ts._kill_process_group(proc)
+
+        assert len(kill_calls) == 2
+        assert kill_calls[0][1] == signal.SIGTERM
+        assert kill_calls[1][1] == signal.SIGKILL
+
+    async def test_sigkill_raises_process_lookup_error(self, tmp_path: Path) -> None:
+        """When SIGKILL raises ProcessLookupError (process exited between SIGTERM and SIGKILL)."""
+        ts = ShellToolset(
+            cwd=tmp_path,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=5.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        proc = MagicMock()
+        proc.pid = 99999
+
+        async def never_return() -> None:
+            await anyio.sleep(999)
+
+        proc.wait = never_return
+
+        import signal
+
+        call_count = 0
+
+        def fake_killpg(pgid: int, sig: int) -> None:
+            nonlocal call_count
+            call_count += 1
+            if sig == signal.SIGKILL:
+                raise ProcessLookupError
+
+        with (
+            patch('os.killpg', side_effect=fake_killpg),
+            patch('os.getpgid', return_value=12345),
+            patch('pydantic_ai_harness.shell._toolset._KILL_GRACE_PERIOD', 0.01),
+        ):
+            await ts._kill_process_group(proc)
+
+        assert call_count == 2
+
+
+class TestDrainWithTimeoutEdgeCases:
+    async def test_stdout_closed_resource_error(self, tmp_path: Path) -> None:
+        """ClosedResourceError on stdout is caught silently after yielding data."""
+        ts = ShellToolset(
+            cwd=tmp_path,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=5.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        proc = MagicMock()
+
+        # Yield one chunk then raise ClosedResourceError
+        class FailingStream:
+            def __init__(self) -> None:
+                self._yielded = False
+
+            def __aiter__(self) -> FailingStream:
+                return self
+
+            async def __anext__(self) -> bytes:
+                if not self._yielded:
+                    self._yielded = True
+                    return b'partial'
+                raise anyio.ClosedResourceError
+
+        proc.stdout = FailingStream()
+        proc.stderr = None
+
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        await ts._drain_with_timeout(stdout_chunks, stderr_chunks, proc)
+        assert stdout_chunks == [b'partial']
+
+    async def test_stderr_broken_resource_error(self, tmp_path: Path) -> None:
+        """BrokenResourceError on stderr is caught silently after yielding data."""
+        ts = ShellToolset(
+            cwd=tmp_path,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=5.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        proc = MagicMock()
+        proc.stdout = None
+
+        class FailingStream:
+            def __init__(self) -> None:
+                self._yielded = False
+
+            def __aiter__(self) -> FailingStream:
+                return self
+
+            async def __anext__(self) -> bytes:
+                if not self._yielded:
+                    self._yielded = True
+                    return b'partial'
+                raise anyio.BrokenResourceError
+
+        proc.stderr = FailingStream()
+
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        await ts._drain_with_timeout(stdout_chunks, stderr_chunks, proc)
+        assert stderr_chunks == [b'partial']
+
+
+class TestReadBgOutputEdgeCases:
+    def test_stdout_oserror(self, tmp_path: Path) -> None:
+        """OSError reading stdout file returns empty string."""
+        ts = ShellToolset(
+            cwd=tmp_path,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=5.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        bg = MagicMock()
+        bg.stdout_path = '/nonexistent/path/stdout'
+        bg.stderr_path = '/nonexistent/path/stderr'
+
+        stdout, stderr = ts._read_bg_output(bg)
+        assert stdout == ''
+        assert stderr == ''
+
+    def test_stderr_oserror_only(self, tmp_path: Path) -> None:
+        """OSError reading stderr file only, stdout succeeds."""
+        ts = ShellToolset(
+            cwd=tmp_path,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=5.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        # Create a valid stdout file but invalid stderr path
+        stdout_file = tmp_path / 'stdout.txt'
+        stdout_file.write_text('hello')
+
+        bg = MagicMock()
+        bg.stdout_path = str(stdout_file)
+        bg.stderr_path = '/nonexistent/path/stderr'
+
+        stdout, stderr = ts._read_bg_output(bg)
+        assert stdout == 'hello'
+        assert stderr == ''
+
+
+class TestCleanupBgFilesEdgeCases:
+    def test_unlink_oserror(self, tmp_path: Path) -> None:
+        """OSError on unlink is caught silently."""
+        ts = ShellToolset(
+            cwd=tmp_path,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=5.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        bg = MagicMock()
+        bg.stdout_path = '/nonexistent/path/stdout'
+        bg.stderr_path = '/nonexistent/path/stderr'
+
+        # Should not raise
+        ts._cleanup_bg_files(bg)
+
+
+class TestStopCommandAlreadyFinished:
+    async def test_stop_already_finished_process(self, shell_dir: Path) -> None:
+        """stop_command on an already-finished process skips kill."""
+        ts = ShellToolset(
+            cwd=shell_dir,
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=[],
+            default_timeout=10.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        # Start a command that finishes immediately
+        start_result = await ts.start_command('echo done')
+        command_id = _parse_command_id(start_result)
+
+        # Wait for the process to finish
+        await anyio.sleep(0.5)
+
+        # Manually mark as finished with exit_code = None (simulates edge case
+        # where finished is True but exit_code was never captured)
+        bg = ts._background[command_id]
+        bg.finished = True
+        bg.exit_code = None
+
+        # stop_command should skip the kill branch and handle None exit_code
+        result = await ts.stop_command(command_id)
+        assert '[stopped:' in result
+        assert '[exit code:' not in result

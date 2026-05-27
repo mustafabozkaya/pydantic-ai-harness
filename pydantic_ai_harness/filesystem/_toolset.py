@@ -1,12 +1,4 @@
-"""Filesystem toolset implementation with security-first design.
-
-Incorporates best practices from:
-- MCP filesystem server: root containment, symlink-aware path checks
-- Codex CLI: policy-based access, protected paths, metadata preservation
-- Aider: robust search/replace editing with conflict detection
-- SWE-agent: configurable tool surface, binary detection
-- CrewAI: centralized safe-path validators
-"""
+"""Filesystem toolset providing sandboxed file operations."""
 
 from __future__ import annotations
 
@@ -22,16 +14,7 @@ from pydantic_ai.toolsets import FunctionToolset
 
 
 def _format_lines(text: str, offset: int, limit: int) -> str:
-    """Format text with line numbers.
-
-    Args:
-        text: The raw file content.
-        offset: Zero-based line offset to start from.
-        limit: Maximum number of lines to include.
-
-    Returns:
-        Numbered text with a continuation hint when more lines remain.
-    """
+    """Format text with line numbers and continuation hint."""
     lines = text.splitlines(keepends=True)
     total = len(lines)
 
@@ -105,22 +88,13 @@ class FileSystemToolset(FunctionToolset[Any]):
         self.add_function(self.create_directory, name='create_directory')
         self.add_function(self.file_info, name='file_info')
 
-    # ------------------------------------------------------------------
-    # Path security
-    # ------------------------------------------------------------------
-
     def _resolve_path(self, path: str) -> Path:
         """Resolve path relative to root, rejecting traversal.
 
         Uses os.path.realpath for symlink resolution before checking containment.
         """
-        # Normalize and join with root
         candidate = (self._root / path).resolve()
-
-        # Symlink-aware: resolve realpath to catch symlink escapes
         real = Path(os.path.realpath(candidate))
-
-        # Containment check against real root
         real_root = Path(os.path.realpath(self._root))
         if not real.is_relative_to(real_root):
             raise PermissionError(f'Path {path!r} resolves outside the root directory.')
@@ -129,19 +103,16 @@ class FileSystemToolset(FunctionToolset[Any]):
 
     def _check_access(self, path: str, *, write: bool = False) -> None:
         """Validate path against allow/deny/protected patterns."""
-        # Check protected patterns (always denied for writes)
         if write and self._protected_patterns:
             matched = next((p for p in self._protected_patterns if fnmatch.fnmatch(path, p)), None)
             if matched:
                 raise PermissionError(f'Path {path!r} is protected (matches {matched!r}).')
 
-        # Check deny patterns
         if self._denied_patterns:
             matched = next((p for p in self._denied_patterns if fnmatch.fnmatch(path, p)), None)
             if matched:
                 raise PermissionError(f'Path {path!r} is denied by pattern {matched!r}.')
 
-        # Check allow patterns (if configured, path must match at least one)
         if self._allowed_patterns:
             if not any(fnmatch.fnmatch(path, p) for p in self._allowed_patterns):
                 raise PermissionError(f'Path {path!r} does not match any allowed pattern.')
@@ -150,10 +121,6 @@ class FileSystemToolset(FunctionToolset[Any]):
         """Resolve and access-check a path in one step."""
         self._check_access(path, write=write)
         return self._resolve_path(path)
-
-    # ------------------------------------------------------------------
-    # Tool implementations
-    # ------------------------------------------------------------------
 
     async def read_file(self, path: str, *, offset: int = 0, limit: int | None = None) -> str:
         """Read a text file with line numbers.
@@ -321,10 +288,8 @@ class FileSystemToolset(FunctionToolset[Any]):
                 rel_parts = file_path.relative_to(real_root).parts
             except ValueError:  # pragma: no cover
                 continue
-            # Skip hidden files/directories
             if any(part.startswith('.') for part in rel_parts):
                 continue
-            # Apply include_glob filter
             rel_str = str(file_path.relative_to(real_root))
             if include_glob and not fnmatch.fnmatch(rel_str, include_glob):
                 continue
@@ -332,7 +297,6 @@ class FileSystemToolset(FunctionToolset[Any]):
                 raw = file_path.read_bytes()
             except OSError:  # pragma: no cover
                 continue
-            # Skip binary files
             if _is_binary(raw):
                 continue
             text = raw.decode('utf-8', errors='replace')
@@ -366,7 +330,6 @@ class FileSystemToolset(FunctionToolset[Any]):
                 rel_parts = match.relative_to(real_root).parts
             except ValueError:  # pragma: no cover
                 continue
-            # Skip hidden files/directories
             if any(part.startswith('.') for part in rel_parts):
                 continue
             rel = str(match.relative_to(real_root))
@@ -419,9 +382,9 @@ class FileSystemToolset(FunctionToolset[Any]):
             is_bin = _is_binary(raw)
             parts.append(f'binary: {is_bin}')
             if not is_bin:
-                line_count = len(raw.decode('utf-8', errors='replace').splitlines())
-                parts.append(f'lines: {line_count}')
-                parts.append(f'hash: {_content_hash(raw.decode("utf-8", errors="replace"))}')
+                text = raw.decode('utf-8', errors='replace')
+                parts.append(f'lines: {len(text.splitlines())}')
+                parts.append(f'hash: {_content_hash(text)}')
 
         if is_link:
             parts.append(f'symlink_target: {os.readlink(original)}')

@@ -24,35 +24,19 @@ _DEFAULT_PROTECTED: list[str] = [
 
 @dataclass
 class FileSystem(AbstractCapability[Any]):
-    """Capability that provides file system access scoped to a root directory.
+    """File system access scoped to a root directory.
 
-    All paths supplied by the model are resolved relative to `root_dir`.
-    Traversal above the root is rejected. Symlinks are resolved before
-    authorization to prevent escape via symlink.
-
-    Security features:
-    - Path traversal prevention (canonical path resolution)
-    - Symlink-aware containment checks
-    - Glob-based allow/deny filtering
-    - Protected path patterns (secrets, keys, .git by default)
-    - Binary file detection
-    - Optimistic concurrency via content hashing
-
-    Example::
-
-        from pydantic_ai import Agent
-        from pydantic_ai_harness.filesystem import FileSystem
-
-        agent = Agent('openai:gpt-4o', capabilities=[FileSystem(root_dir='.')])
+    All paths are resolved relative to `root_dir`. Traversal above the root
+    is rejected. Symlinks are resolved before authorization.
     """
 
     root_dir: str | Path = '.'
     """Root directory for all file operations. Defaults to the current directory."""
 
-    allowed_patterns: Sequence[str] = field(default_factory=lambda: list[str]())
+    allowed_patterns: Sequence[str] = field(default_factory=list[str])
     """If non-empty, only paths matching at least one glob pattern are accessible."""
 
-    denied_patterns: Sequence[str] = field(default_factory=lambda: list[str]())
+    denied_patterns: Sequence[str] = field(default_factory=list[str])
     """Paths matching any of these glob patterns are rejected."""
 
     protected_patterns: Sequence[str] = field(default_factory=lambda: list(_DEFAULT_PROTECTED))
@@ -71,7 +55,13 @@ class FileSystem(AbstractCapability[Any]):
     max_find_results: int = 1000
     """Maximum number of matches returned by `find_files`."""
 
-    def get_toolset(self) -> AgentToolset[Any] | None:
+    def __post_init__(self) -> None:
+        for name in ('max_read_lines', 'max_search_results', 'max_find_results'):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f'{name} must be a positive integer, got {value!r}')
+
+    def get_toolset(self) -> AgentToolset[Any]:
         """Build and return the filesystem toolset."""
         return FileSystemToolset(
             root_dir=Path(self.root_dir),
