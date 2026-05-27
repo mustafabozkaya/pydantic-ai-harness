@@ -49,3 +49,7 @@ The agent calls `read_file('pyproject.toml')`; the tool delegates to the environ
 ## How errors reach the model
 
 The environment translates backend failures into a single `ExecutionEnvironmentError` taxonomy (uniform across backends). The capability then routes them: errors the model can fix by changing its argument (file not found, wrong path, a directory, non-UTF-8) become a `ModelRetry`, so the model gets another try; infrastructure failures propagate and surface loudly.
+
+## Credits
+
+The system prompt and tool descriptions are adopted, largely verbatim, from [**pi**](https://github.com/badlogic/pi-mono) by Mario Zechner ([@badlogic](https://github.com/badlogic)) and the pi-mono team (MIT-licensed). pi's coding-agent prompts are exceptionally well-tuned; rather than reinvent them, we stand on that work and credit it gratefully. The exact sources, pinned to a commit, are recorded in [`agent_docs/pi-prompts.md`](../../agent_docs/pi-prompts.md).
