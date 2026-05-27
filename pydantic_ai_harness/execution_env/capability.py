@@ -7,7 +7,6 @@ from pydantic import Field
 from pydantic_ai import FunctionToolset, ModelRetry
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.tools import AgentDepsT
-from pydantic_ai.toolsets import AgentToolset
 
 from ..environments.abstract import AbstractEnvironment
 from ..environments.exceptions import (
@@ -26,7 +25,7 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
 
     environment: AbstractEnvironment
 
-    def get_toolset(self) -> AgentToolset[AgentDepsT] | None:
+    def get_toolset(self) -> FunctionToolset[AgentDepsT]:
         """Get the toolset for the execution environment."""
         toolset = FunctionToolset[AgentDepsT]()
 
@@ -50,13 +49,13 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
                 # observability story, consider emitting a Logfire/OTel span or event
                 # for it before retrying -- NOT stdlib logging or warnings.warn
                 # (pydantic-ai uses neither for runtime events).
-                raise ModelRetry(f'{str(e)}') from e
+                raise ModelRetry(str(e)) from e
             except (EnvFileReadError,):
                 # TODO: This should be a ToolFailed error when I merge that in
                 # catching and re raising here to show the boundary where we change it
                 raise
             except UnicodeDecodeError as e:
-                raise ModelRetry(f'{str(e)}') from e
+                raise ModelRetry(str(e)) from e
 
         toolset.add_function(read_file, description='Read a file from the execution environment.')
 
