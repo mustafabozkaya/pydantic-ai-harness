@@ -227,6 +227,15 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
             """Replace a single unique occurrence of text in an existing file."""
             return await _edit_file(self.environment, path, old_string, new_string, replace_all)
 
+        async def ls(
+            path: Annotated[str, Field(description='Path to the directory to list, relative to the workspace root.')],
+        ) -> list[str]:
+            """List the contents of a directory."""
+            ls_result = await self.environment.ls(path)
+            return [file.name + ('/' if file.is_directory else '') for file in ls_result]
+
+        toolset.add_function(ls, description='List the contents of a directory.')
+
         toolset.add_function(read_file, description='Read a file from the execution environment.')
         toolset.add_function(write_file, description='Write a file to the execution environment.')
         toolset.add_function(edit_file, description='Replace a unique occurrence of text in a file.')

@@ -5,6 +5,17 @@ from dataclasses import dataclass
 
 
 @dataclass(kw_only=True)
+class AbstractFile:
+    """A file in the environment."""
+
+    name: str
+    """The file's name."""
+
+    is_directory: bool
+    """Whether the file is a directory."""
+
+
+@dataclass(kw_only=True)
 class AbstractEnvironment(ABC):
     """Abstract base class for all execution environments."""
 
@@ -43,5 +54,17 @@ class AbstractEnvironment(ABC):
             PathEscapeError: `path` resolves outside `root`.
             EnvFilePermissionError: The backend may not write `path`.
             EnvFileWriteError: Any other I/O failure (nothing builtin leaks).
+        """
+        raise NotImplementedError  # pragma: no cover
+
+    @abstractmethod
+    async def ls(self, path: str) -> list[AbstractFile]:
+        """List the contents of a directory.
+
+        Args:
+            path: Directory path, resolved against and confined to `root`.
+
+        Returns:
+            A list of files and directories in the directory.
         """
         raise NotImplementedError  # pragma: no cover

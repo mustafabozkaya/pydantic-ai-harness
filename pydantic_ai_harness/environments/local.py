@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from .abstract import AbstractEnvironment
+from .abstract import AbstractEnvironment, AbstractFile
 from .exceptions import (
     EnvFileIsADirectoryError,
     EnvFileNotADirectoryError,
@@ -71,3 +71,17 @@ class LocalEnvironment(AbstractEnvironment):
             raise EnvFilePermissionError(f'{path!r} is not writable by the environment root {self.root!r}: {str(e)}')
         except OSError as e:
             raise EnvFileWriteError(f'{path!r} could not be written to the environment root {self.root!r}: {str(e)}')
+
+    async def ls(self, path: str) -> list[AbstractFile]:
+        """List the contents of a directory."""
+        root = Path(self.root).resolve()
+        resolved_path = Path(root, path).resolve()
+
+        if not resolved_path.is_relative_to(root):
+            raise PathEscapeError(f'{path!r} resolves outside the environment root {self.root!r}')
+
+        try:
+            return [AbstractFile(name=file.name, is_directory=file.is_dir()) for file in resolved_path.iterdir()]
+        except PermissionError as e:
+            raise EnvFilePermissionError(f'{path!r} is not listable by the environment root {self.root!r}: {str(e)}')
+        # I am not sure if any other errors are possible here anyway?

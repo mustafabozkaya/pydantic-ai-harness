@@ -18,7 +18,10 @@ from pydantic_ai_harness.environments.exceptions import (
 )
 from pydantic_ai_harness.environments.local import LocalEnvironment
 
-# chmod-based denial does nothing for root, which bypasses permission bits.
+# The permission tests below assert that the OS denies us a read/write. But root ignores
+# POSIX permission bits entirely -- `chmod 000` then reading still succeeds as root -- so
+# those tests would fail spuriously when run as uid 0 (common in CI containers). Skip them
+# there. `hasattr` guards Windows, which has no `geteuid` and no POSIX bits to begin with.
 skip_if_root = pytest.mark.skipif(
     hasattr(os, 'geteuid') and os.geteuid() == 0, reason='root bypasses POSIX permission bits'
 )
