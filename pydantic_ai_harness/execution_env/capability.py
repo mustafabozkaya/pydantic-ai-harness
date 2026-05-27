@@ -220,9 +220,12 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
             path: Annotated[str, Field(description='Path to the file to edit, relative to the workspace root.')],
             old_string: Annotated[str, Field(description='Exact text to replace. Must match once, uniquely.')],
             new_string: Annotated[str, Field(description='Text to replace it with.')],
+            replace_all: Annotated[
+                bool, Field(description='Whether to replace all occurrences of the string, not just the first.')
+            ] = False,
         ) -> str:
             """Replace a single unique occurrence of text in an existing file."""
-            return await _edit_file(self.environment, path, old_string, new_string)
+            return await _edit_file(self.environment, path, old_string, new_string, replace_all)
 
         toolset.add_function(read_file, description='Read a file from the execution environment.')
         toolset.add_function(write_file, description='Write a file to the execution environment.')
