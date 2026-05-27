@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(kw_only=True)
 class AbstractEnvironment(ABC):
     """Abstract base class for all execution environments."""
 
