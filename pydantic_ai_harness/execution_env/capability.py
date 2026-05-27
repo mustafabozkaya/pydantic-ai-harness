@@ -151,19 +151,19 @@ async def _edit_file(
         raise ModelRetry(str(e)) from e
 
     if old_string == new_string:
-        raise ModelRetry('`old_string` and `new_string` are identical — this edit is a no-op. Provide different text.')
+        raise ModelRetry('old_string and new_string are identical — this edit is a no-op. Provide different text.')
 
     count = text.count(old_string)
 
     if count == 0:
         raise ModelRetry(
-            f'`old_string` was not found in {path!r}. It must match the file exactly, '
+            f'old_string was not found in {path!r}. It must match the file exactly, '
             'including whitespace and indentation.'
         )
 
     if count > 1 and not replace_all:
         raise ModelRetry(
-            f'`old_string` matches {count} places in {path!r}. Add surrounding context to make it '
+            f'old_string matches {count} places in {path!r}. Add surrounding context to make it '
             'unique, or pass `replace_all=true` to change every occurrence.'
         )
 
