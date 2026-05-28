@@ -375,9 +375,23 @@ def build_toolset(
                 description='File or directory to search, relative to the workspace root. Directories are searched recursively.'
             ),
         ],
-        pattern: Annotated[str, Field(description='The literal text to search for.')],
+        pattern: Annotated[
+            str,
+            Field(
+                # Model-facing: name the dialect and show it, so the model isn't surprised when a regex
+                # silently no-matches. This is fixed-string substring, not regex -- `.` matches a literal
+                # dot, `foo.*` matches the literal text `foo.*`. Point it at shell for real power, but
+                # only "if available" since read-only toolsets omit shell.
+                description=(
+                    'Literal text to find (fixed-string substring match, NOT a regex): a line matches if '
+                    "it contains this text verbatim. e.g. 'def main(' matches that exact text; '.' matches "
+                    'a literal dot, not any char. For regex/glob-filtered search, use the `shell` tool '
+                    '(e.g. `grep -E`) if it is available.'
+                ),
+            ),
+        ],
     ) -> list[str]:
-        """Search a file or directory tree for a literal pattern."""
+        """Search a file or directory tree for literal text (fixed-string substring, not regex)."""
         return await _grep(environment, path, pattern)
 
     async def glob(

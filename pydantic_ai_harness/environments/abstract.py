@@ -109,11 +109,18 @@ class AbstractEnvironment(ABC):
 
     @abstractmethod
     async def grep(self, path: str, pattern: str) -> list[AbstractMatch]:
-        """Search a file for a pattern.
+        """Search a file or directory tree for a pattern.
+
+        `pattern` is matched as a **fixed-string substring**, not a regex: a line matches iff it
+        contains `pattern` verbatim. This is a backend-independent contract the conformance suite
+        enforces -- every backend must give identical results, so backends that shell out must use
+        fixed-string mode (e.g. `grep -F`), never native regex. Regex power is the `shell` tool's job;
+        keeping this primitive simple is what lets a no-shell read-only toolset behave identically
+        across Local and Docker.
 
         Args:
             path: File path, resolved against and confined to `root`.
-            pattern: The pattern to search for.
+            pattern: Literal text to find (substring match, not a regex).
 
         Returns:
             A list of matches.
@@ -132,9 +139,15 @@ class AbstractEnvironment(ABC):
     async def glob(self, path: str, pattern: str) -> list[str]:
         """Find files under a directory matching a glob pattern.
 
+        Supported pattern syntax is a backend-independent subset the conformance suite enforces:
+        `*` (any run of non-separator chars), `?` (one char), `[seq]` (char class), and `**` for
+        recursion. A bare pattern like `*.py` matches at **any depth**. Backends that shell out must
+        constrain `find`/native globbing to match these semantics rather than expose their own dialect;
+        for anything more, the model uses `shell`.
+
         Args:
             path: Directory path, resolved against and confined to `root`.
-            pattern: The glob pattern to match. Matched recursively at any depth.
+            pattern: Glob pattern (subset above), matched recursively at any depth.
 
         Returns:
             A list of matching file paths, relative to `root`.
