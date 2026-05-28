@@ -229,10 +229,13 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
 
         async def ls(
             path: Annotated[str, Field(description='Path to the directory to list, relative to the workspace root.')],
+            limit: Annotated[int | None, Field(description='Maximum number of entries to list')] = None,
         ) -> list[str]:
             """List the contents of a directory."""
             try:
                 ls_result = await self.environment.ls(path)
+                if limit is not None:
+                    return [file.name + ('/' if file.is_directory else '') for file in ls_result[:limit]]
                 return [file.name + ('/' if file.is_directory else '') for file in ls_result]
             except PathEscapeError as e:
                 get_current_span().add_event('path_escape_attempt', {'path': path})
