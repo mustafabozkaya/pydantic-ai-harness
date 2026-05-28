@@ -203,15 +203,8 @@ async def test_shell_is_shell_interpreted(environment: AbstractEnvironment, tmp_
 
 
 async def test_shell_runs_in_root(environment: AbstractEnvironment, tmp_path: Path) -> None:
-    result = await environment.shell_command('echo $PWD', timeout=1)
-    assert result == snapshot(
-        ShellCommandResult(
-            stdout=b'/private/var/folders/w5/b3glxyl5311dyplzzpxg3bpc0000gn/T/pytest-of-adtyavrdhn/pytest-140/test_shell_runs_in_root_local_0\n',
-            stderr=b'',
-            return_code=0,
-            timed_out=False,
-        )
-    )
+    result = await environment.shell_command('pwd', timeout=1)
+    assert result.stdout == f'{tmp_path.resolve()}\n'.encode()
 
 
 async def test_shell_no_state_persists_between_calls(environment: AbstractEnvironment, tmp_path: Path) -> None:
