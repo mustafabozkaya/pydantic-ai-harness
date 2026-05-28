@@ -9,6 +9,7 @@ concerns differently, so they are deliberately not part of the shared conformanc
 import asyncio
 import os
 import shutil
+import signal
 from pathlib import Path
 
 import pytest
@@ -191,26 +192,26 @@ async def test_timeout_kills_the_whole_tree(tmp_path: Path) -> None:
     #
     # The command builds a small process tree:
     #   bash (leader, its own process group via start_new_session=True)
-    #   |-- ( sleep 2; touch marker )  <- a SUBSHELL, backgrounded with `&` -> a separate
+    #   |-- ( sleep 1; touch marker )  <- a SUBSHELL, backgrounded with `&` -> a separate
     #   |                                 grandchild process that shares the leader's pgid
     #   `-- sleep 30                   <- foreground, keeps the leader alive past the timeout
     #                                     so the TIMEOUT ends the run, not the script finishing
     #
     # We can't ask the OS "is the grandchild still alive?" reliably (PID reuse, races), so we
-    # use a dead-man's switch: the grandchild only writes `marker` at t=2. If our killpg reaches
-    # the whole group, the grandchild dies at t=1 and never writes -> marker absent. If we only
-    # killed the leader (e.g. proc.kill()), the grandchild is orphaned, survives to t=2, and
+    # use a dead-man's switch: the grandchild only writes `marker` at t=1. If our killpg reaches
+    # the whole group, the grandchild dies at t=0.5 and never writes -> marker absent. If we only
+    # killed the leader (e.g. proc.kill()), the grandchild is orphaned, survives to t=1, and
     # writes the file -> marker present. So "marker must not exist" == "the tree really died".
     env = LocalEnvironment(root=str(tmp_path))
     marker = tmp_path / 'marker.txt'
-    result = await env.shell_command(f'( sleep 2; touch {marker} ) & sleep 30', timeout=1)
+    result = await env.shell_command(f'( sleep 1; touch {marker} ) & sleep 30', timeout=0.5)
 
     assert result.timed_out is True
-    # Wait LONGER than the grandchild's t=2 write attempt. If an orphan survived, it has already
+    # Wait LONGER than the grandchild's t=1 write attempt. If an orphan survived, it has already
     # written by now -- so checking after this sleep catches it. Checking immediately (the call
-    # returns at ~t=1 once the leader dies) would see "no marker yet" even with a live orphan
+    # returns at ~t=0.5 once the leader dies) would see "no marker yet" even with a live orphan
     # and pass falsely; the sleep must outlast the orphan's delay-to-write for the assert to bite.
-    await asyncio.sleep(3)
+    await asyncio.sleep(1)
     assert not marker.exists()
 
 
@@ -221,7 +222,7 @@ async def test_sigkill_escalation_kills_stubborn_child(tmp_path: Path, monkeypat
     # nothing, so (unlike the plain `sleep` in the test above) it survives the polite kill. That is
     # exactly the case `_terminate_and_drain`'s `except TimeoutError -> SIGKILL` branch exists for:
     # SIGTERM is ignored, the grace window elapses, and we escalate to SIGKILL (uncatchable -- you
-    # cannot trap it), which kills the grandchild before its t=2 `touch` -> marker stays absent.
+    # cannot trap it), which kills the grandchild before its t=1 `touch` -> marker stays absent.
     #
     # We shrink the grace to 0.1s by monkeypatching the private module constant (see its docstring:
     # it's deliberately not a public knob, and a test of *this* module may patch this module's
@@ -230,11 +231,57 @@ async def test_sigkill_escalation_kills_stubborn_child(tmp_path: Path, monkeypat
 
     env = LocalEnvironment(root=str(tmp_path))
     marker = tmp_path / 'marker.txt'
-    result = await env.shell_command(f'( trap "" TERM; sleep 2; touch {marker} ) & sleep 30', timeout=1)
+    result = await env.shell_command(f'( trap "" TERM; sleep 1; touch {marker} ) & sleep 30', timeout=0.5)
 
     assert result.timed_out is True
-    await asyncio.sleep(3)
+    await asyncio.sleep(1)
     assert not marker.exists()
+
+
+async def test_sigterm_already_dead_is_swallowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Covers the ProcessLookupError swallow on the SIGTERM killpg: the group can vanish in the race
+    # between the timeout firing and our signal. We fake that by raising ProcessLookupError for the
+    # SIGTERM call only (delegating SIGKILL to the real killpg so the process still actually dies and
+    # we don't hang on the drain). Teardown must shrug it off and still return a timed-out result.
+    monkeypatch.setattr('pydantic_ai_harness.environments.local._SIGTERM_GRACE_SECONDS', 0.1)
+    real_killpg = os.killpg
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        if sig == signal.SIGTERM:
+            raise ProcessLookupError
+        real_killpg(pgid, sig)
+
+    monkeypatch.setattr(os, 'killpg', fake_killpg)
+    env = LocalEnvironment(root=str(tmp_path))
+    result = await env.shell_command('sleep 30', timeout=0.3)
+    assert result.timed_out is True
+
+
+async def test_falls_back_to_sh_when_bash_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Covers the `sh` branch: when bash is missing we resolve to POSIX sh. Report bash as absent but
+    # defer to the real lookup for everything else, so `sh` resolves and the command genuinely runs.
+    real_which = shutil.which
+
+    def only_sh(name: str) -> str | None:
+        return None if name == 'bash' else real_which(name)
+
+    monkeypatch.setattr(shutil, 'which', only_sh)
+    env = LocalEnvironment(root=str(tmp_path))
+    result = await env.shell_command('echo hi')
+    assert result.stdout == b'hi\n'
+    assert result.return_code == 0
+
+
+async def test_spawn_failure_raises_shell_execution_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Covers the OSError->EnvShellExecutionError wrap: a shell resolves but the spawn itself fails
+    # (e.g. a broken root, fork failure). The infra error surfaces as EnvShellExecutionError.
+    async def boom(*_args: object, **_kwargs: object) -> asyncio.subprocess.Process:
+        raise OSError('spawn failed')
+
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', boom)
+    env = LocalEnvironment(root=str(tmp_path))
+    with pytest.raises(EnvShellExecutionError):
+        await env.shell_command('echo hi')
 
 
 async def test_no_shell_raises_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -246,3 +293,24 @@ async def test_no_shell_raises_error(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(shutil, 'which', _no_shell)
     with pytest.raises(EnvShellExecutionError):
         await env.shell_command('echo "hello"')
+
+
+async def test_cancellation_kills_the_tree(tmp_path: Path) -> None:
+    # Same orphan probe as the timeout test, but the trigger is the CALLER cancelling mid-run (not a
+    # timeout) -- this exercises the `finally` + `asyncio.shield` teardown path. No `timeout=`: only
+    # our `task.cancel()` may end the run, isolating the cancellation path (a timeout racing the
+    # cancel would let the run RETURN a result, and then `await task` wouldn't raise).
+    env = LocalEnvironment(root=str(tmp_path))
+    marker = tmp_path / 'marker.txt'
+    task = asyncio.create_task(env.shell_command(f'( sleep 1; touch {marker} ) & sleep 30'))
+    # Let the coroutine actually spawn the subprocess before cancelling; cancelling at t=0 would kill
+    # it while still parked at its first await, before `proc` exists, testing nothing.
+    await asyncio.sleep(0.5)
+    task.cancel()
+    # A cancelled task MUST end by raising CancelledError, not by returning a value -- swallowing it
+    # would break callers (wait_for / TaskGroup) that rely on the cancellation propagating.
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.sleep(1)
+    assert not marker.exists()

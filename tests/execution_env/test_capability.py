@@ -65,7 +65,7 @@ class _RaisingEnvironment(AbstractEnvironment):
     async def glob(self, path: str, pattern: str) -> list[str]:
         raise self.error
 
-    async def shell_command(self, command: str, timeout: int | None = None) -> ShellCommandResult:
+    async def shell_command(self, command: str, timeout: float | None = None) -> ShellCommandResult:
         raise self.error
 
 
@@ -96,7 +96,9 @@ class _StoreEnvironment(AbstractEnvironment):
         # Returned deliberately out of sorted order to prove the capability sorts.
         return ['sub/b.py', 'a.py', 'sub/a.py']
 
-    async def shell_command(self, command: str, timeout: int | None = None) -> ShellCommandResult:
+    async def shell_command(self, command: str, timeout: float | None = None) -> ShellCommandResult:  # pragma: no cover
+        # Stub to satisfy the ABC so this file-op fake is instantiable; shell behavior is exercised
+        # through _ShellEnvironment, which overrides this, so this body is never reached.
         return ShellCommandResult(stdout=self.data, stderr=b'', return_code=0, timed_out=False)
 
 
@@ -447,7 +449,7 @@ class _ShellEnvironment(_StoreEnvironment):
 
     command_result: ShellCommandResult
 
-    async def shell_command(self, command: str, timeout: int | None = None) -> ShellCommandResult:
+    async def shell_command(self, command: str, timeout: float | None = None) -> ShellCommandResult:
         return self.command_result
 
 
@@ -461,7 +463,7 @@ def _shell_env(
     )
 
 
-async def _shell(environment: AbstractEnvironment, *, command: str = 'echo hi', timeout: int | None = None) -> object:
+async def _shell(environment: AbstractEnvironment, *, command: str = 'echo hi', timeout: float | None = None) -> object:
     """Invoke the shell tool through its toolset."""
     toolset = ExecutionEnv(environment=environment).get_toolset()
     ctx = _ctx()
@@ -492,6 +494,11 @@ async def test_shell_includes_stderr_only_when_present() -> None:
     # stderr is appended (labelled) when non-empty so warnings aren't dropped...
     assert await _shell(_shell_env(stdout=b'out', stderr=b'warn')) == 'out\n[stderr]\nwarn'
     # ...but a clean run with empty stderr reads as just its stdout (covered by the success test).
+
+
+async def test_shell_empty_stdout_is_omitted() -> None:
+    # When stdout is empty, it's skipped entirely -- no leading blank line before the stderr block.
+    assert await _shell(_shell_env(stdout=b'', stderr=b'warn')) == '[stderr]\nwarn'
 
 
 async def test_shell_output_is_tail_truncated_with_marker() -> None:
