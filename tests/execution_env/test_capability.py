@@ -22,7 +22,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from pydantic_ai_harness.environments.abstract import AbstractEnvironment, AbstractFile
+from pydantic_ai_harness.environments.abstract import AbstractEnvironment, AbstractFile, AbstractMatch
 from pydantic_ai_harness.environments.exceptions import (
     EnvIsADirectoryError,
     EnvNotADirectoryError,
@@ -52,6 +52,9 @@ class _RaisingEnvironment(AbstractEnvironment):
     async def ls(self, path: str) -> list[AbstractFile]:
         raise self.error
 
+    async def grep(self, path: str, pattern: str) -> list[AbstractMatch]:
+        raise self.error
+
 
 @dataclass(kw_only=True)
 class _StoreEnvironment(AbstractEnvironment):
@@ -67,6 +70,14 @@ class _StoreEnvironment(AbstractEnvironment):
 
     async def ls(self, path: str) -> list[AbstractFile]:
         return [AbstractFile(name='sub', is_directory=True), AbstractFile(name='file.txt', is_directory=False)]
+
+    async def grep(self, path: str, pattern: str) -> list[AbstractMatch]:
+        # Returned deliberately out of (path, lineno) order to prove the capability sorts.
+        return [
+            AbstractMatch(path='b.txt', line='two', lineno=1),
+            AbstractMatch(path='a.txt', line='five', lineno=5),
+            AbstractMatch(path='a.txt', line='one', lineno=1),
+        ]
 
 
 def _ctx() -> RunContext[None]:
@@ -331,6 +342,45 @@ async def test_ls_recoverable_errors_become_model_retry(error: ExecutionEnvironm
 async def test_ls_infra_error_propagates() -> None:
     with pytest.raises(EnvReadError):
         await _ls(_RaisingEnvironment(root='/x', error=EnvReadError('disk on fire')))
+
+
+# --- grep ---------------------------------------------------------------------
+
+
+async def _grep(environment: AbstractEnvironment, *, path: str = 'd', pattern: str = 'x') -> object:
+    """Invoke the grep tool through its toolset."""
+    toolset = ExecutionEnv(environment=environment).get_toolset()
+    ctx = _ctx()
+    tools = await toolset.get_tools(ctx)
+    return await toolset.call_tool('grep', {'path': path, 'pattern': pattern}, ctx, tools['grep'])
+
+
+async def test_grep_formats_and_sorts_path_lineno_line() -> None:
+    # Each match renders as the classic `path:lineno:line` one-liner, and the capability sorts
+    # by (path, lineno) -- the backend returns walk order, determinism is added here.
+    assert await _grep(_StoreEnvironment(root='/x', data=b'')) == [
+        'a.txt:1:one',
+        'a.txt:5:five',
+        'b.txt:1:two',
+    ]
+
+
+@pytest.mark.parametrize(
+    'error',
+    [
+        EnvNotFoundError('not found'),
+        EnvPermissionError('not readable'),
+        PathEscapeError('outside root'),
+    ],
+)
+async def test_grep_recoverable_errors_become_model_retry(error: ExecutionEnvironmentError) -> None:
+    with pytest.raises(ModelRetry):
+        await _grep(_RaisingEnvironment(root='/x', error=error))
+
+
+async def test_grep_infra_error_propagates() -> None:
+    with pytest.raises(EnvReadError):
+        await _grep(_RaisingEnvironment(root='/x', error=EnvReadError('disk on fire')))
 
 
 # --- end-to-end: capability through a real backend + agent --------------------

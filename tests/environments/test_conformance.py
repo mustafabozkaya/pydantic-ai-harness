@@ -9,7 +9,9 @@ resolution, POSIX permissions) lives in the per-backend test modules, not here.
 from pathlib import Path
 
 import pytest
+from inline_snapshot import snapshot
 
+from pydantic_ai_harness.environments import AbstractMatch
 from pydantic_ai_harness.environments.abstract import AbstractEnvironment
 from pydantic_ai_harness.environments.exceptions import (
     EnvIsADirectoryError,
@@ -94,3 +96,53 @@ async def test_ls_on_a_file_raises_not_a_directory(environment: AbstractEnvironm
 async def test_ls_relative_escape_raises(environment: AbstractEnvironment) -> None:
     with pytest.raises(PathEscapeError):
         await environment.ls('..')
+
+
+async def test_grep_finds_matches_recursively(environment: AbstractEnvironment, tmp_path: Path) -> None:
+    (tmp_path / 'top.txt').write_text('hello\nNEEDLE here\n')
+    (tmp_path / 'sub').mkdir()
+    (tmp_path / 'sub' / 'deep.txt').write_text('nothing\nalso NEEDLE\n')
+    (tmp_path / 'sub' / 'miss.txt').write_text('no match here\n')
+
+    matches = await environment.grep('.', 'NEEDLE')
+
+    # The backend returns matches in filesystem walk order (unsorted) -- determinism is added at
+    # the capability layer, not here -- so compare as a set, like the `ls` conformance test.
+    assert {(m.path, m.lineno, m.line) for m in matches} == {
+        ('top.txt', 2, 'NEEDLE here\n'),
+        ('sub/deep.txt', 2, 'also NEEDLE\n'),
+    }
+
+
+async def test_grep_missing_file_raises_not_found(environment: AbstractEnvironment) -> None:
+    with pytest.raises(EnvNotFoundError):
+        await environment.grep('does-not-exist', 'NEEDLE')
+
+
+async def test_grep_relative_escape_raises(environment: AbstractEnvironment) -> None:
+    with pytest.raises(PathEscapeError):
+        await environment.grep('..', 'NEEDLE')
+
+
+async def test_grep_binary_file_skips_and_continues(environment: AbstractEnvironment, tmp_path: Path) -> None:
+    # Create a directory with a binary file in it
+    (tmp_path / 'dir').mkdir()
+    (tmp_path / 'dir' / 'binary.bin').write_bytes(b'\x00\xff\xfe')
+
+    # Create a file with a match
+    (tmp_path / 'dir' / 'match.txt').write_text('NEEDLE')
+
+    # Create a file with a non-match
+    (tmp_path / 'dir' / 'non-match.txt').write_text('no match here')
+
+    # Grep the directory
+
+    matches = await environment.grep('dir', 'NEEDLE')
+    assert matches == snapshot([AbstractMatch(path='dir/match.txt', line='NEEDLE', lineno=1)])
+
+
+async def test_grep_single_file(environment: AbstractEnvironment, tmp_path: Path) -> None:
+    # A file path (not a directory) exercises the is-a-file branch: search just that file.
+    (tmp_path / 'only.txt').write_text('first\nNEEDLE on two\nthird\n')
+    matches = await environment.grep('only.txt', 'NEEDLE')
+    assert matches == snapshot([AbstractMatch(path='only.txt', line='NEEDLE on two\n', lineno=2)])

@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from .abstract import AbstractEnvironment, AbstractFile
+from .abstract import AbstractEnvironment, AbstractFile, AbstractMatch
 from .exceptions import (
     EnvIsADirectoryError,
     EnvNotADirectoryError,
@@ -14,6 +14,20 @@ from .exceptions import (
     EnvWriteError,
     PathEscapeError,
 )
+
+
+async def _grep_file(root: str, path: str, pattern: str) -> list[AbstractMatch]:
+    """Search a file for a pattern."""
+    results: list[AbstractMatch] = []
+    try:
+        with open(path) as file:
+            for lineno, line in enumerate(file, start=1):
+                if pattern in line:
+                    results.append(AbstractMatch(path=str(Path(path).relative_to(root)), line=line, lineno=lineno))
+    except (OSError, UnicodeDecodeError):
+        return results
+
+    return results
 
 
 @dataclass(kw_only=True)
@@ -96,3 +110,34 @@ class LocalEnvironment(AbstractEnvironment):
             raise EnvNotADirectoryError(f'{path!r} is not a directory in the environment root {self.root!r}: {str(e)}')
         except OSError as e:
             raise EnvReadError(f'{path!r} could not be listed in the environment root {self.root!r}: {str(e)}')
+
+    async def grep(self, path: str, pattern: str) -> list[AbstractMatch]:
+        """Search a file for a pattern."""
+        root = Path(self.root).resolve()
+        resolved_path = Path(root, path).resolve()
+
+        if not resolved_path.is_relative_to(root):
+            raise PathEscapeError(f'{path!r} resolves outside the environment root {self.root!r}')
+
+        results: list[AbstractMatch] = []
+
+        # grep validates the top path with guard clauses (not the wrap-the-exception idiom that
+        # read_file/ls use) because os.walk/os.access don't raise -- they return empty/False. You
+        # can't translate an exception that's never thrown, so the argument must be checked up front.
+        if not os.path.exists(resolved_path):
+            raise EnvNotFoundError(f'{path!r} not found in the environment root {self.root!r}')
+
+        if not os.access(resolved_path, os.R_OK):
+            raise EnvPermissionError(f'{path!r} is not readable by the environment root {self.root!r}')
+
+        if os.path.isfile(resolved_path):
+            results = await _grep_file(str(root), str(resolved_path), pattern)
+        else:
+            for dirpath, _, filenames in os.walk(resolved_path):
+                for filename in filenames:
+                    results.extend(await _grep_file(str(root), os.path.join(dirpath, filename), pattern))
+
+        # Returned in filesystem walk order (unsorted). Determinism is the capability layer's
+        # job -- it sorts before presenting -- so backends stay thin and only one place has to
+        # implement (and be verified for) the ordering. See ExecutionEnv.get_toolset grep tool.
+        return results

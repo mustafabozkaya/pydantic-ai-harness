@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 
-@dataclass(kw_only=True)
+@dataclass(kw_only=True, frozen=True)
 class AbstractFile:
     """A file in the environment."""
 
@@ -13,6 +13,20 @@ class AbstractFile:
 
     is_directory: bool
     """Whether the file is a directory."""
+
+
+@dataclass(kw_only=True, frozen=True)
+class AbstractMatch:
+    """A line in a file."""
+
+    path: str
+    """The path to the file."""
+
+    line: str
+    """The line's text."""
+
+    lineno: int
+    """The line's number."""
 
 
 @dataclass(kw_only=True)
@@ -72,6 +86,27 @@ class AbstractEnvironment(ABC):
             EnvNotFoundError: No directory exists at `path`.
             EnvNotADirectoryError: A component of `path` is not a directory.
             EnvPermissionError: The backend may not list `path`.
+            EnvReadError: Any other I/O failure (nothing builtin leaks).
+        """
+        raise NotImplementedError  # pragma: no cover
+
+    @abstractmethod
+    async def grep(self, path: str, pattern: str) -> list[AbstractMatch]:
+        """Search a file for a pattern.
+
+        Args:
+            path: File path, resolved against and confined to `root`.
+            pattern: The pattern to search for.
+
+        Returns:
+            A list of matches.
+
+        Raises:
+            PathEscapeError: `path` resolves outside `root`.
+            EnvNotFoundError: No file exists at `path`.
+            EnvIsADirectoryError: `path` is a directory, not a file.
+            EnvNotADirectoryError: A component of `path` is not a directory.
+            EnvPermissionError: The backend may not grep `path`.
             EnvReadError: Any other I/O failure (nothing builtin leaks).
         """
         raise NotImplementedError  # pragma: no cover

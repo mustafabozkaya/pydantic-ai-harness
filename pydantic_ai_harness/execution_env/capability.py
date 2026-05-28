@@ -265,9 +265,46 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
                 # catching and re raising here to show the boundary where we change it
                 raise
 
+        async def grep(
+            path: Annotated[
+                str,
+                Field(
+                    description='File or directory to search, relative to the workspace root. Directories are searched recursively.'
+                ),
+            ],
+            pattern: Annotated[str, Field(description='The literal text to search for.')],
+        ) -> list[str]:
+            """Search a file or directory tree for a literal pattern."""
+            try:
+                # Classic `grep`/`rg` line format the model has seen everywhere: `path:lineno:line`.
+                # Compact (one line per hit) and the lineno lets the model jump straight to a
+                # follow-up read_file(offset=...) or edit. Per-file errors (binary, unreadable)
+                # are skipped inside the backend, so only top-path errors reach here.
+                matches = await self.environment.grep(path, pattern)
+                # Sort by (path, lineno) here, not in the backend: the backend returns matches in
+                # filesystem walk order, which varies across machines/filesystems/backends. The
+                # model doesn't need sorted order, but SEPARATE executions of the same grep must
+                # produce identical output -- otherwise evals, snapshot tests, and run-to-run trace
+                # comparisons flap. (This is NOT about prompt caching: within one run the tool
+                # result is stored and replayed verbatim, never re-executed.) Sorting at the
+                # capability means one place implements it and every backend stays thin -- same
+                # choice as `ls`.
+                matches.sort(key=lambda match: (match.path, match.lineno))
+                return [f'{match.path}:{match.lineno}:{match.line}' for match in matches]
+            except PathEscapeError as e:
+                get_current_span().add_event('path_escape_attempt', {'path': path})
+                raise ModelRetry(str(e)) from e
+            except (EnvNotFoundError, EnvPermissionError) as e:
+                raise ModelRetry(str(e)) from e
+            except (EnvReadError,):
+                # TODO: This should be a ToolFailed error when I merge that in
+                # catching and re raising here to show the boundary where we change it
+                raise
+
         toolset.add_function(read_file, description='Read a file from the execution environment.')
         toolset.add_function(write_file, description='Write a file to the execution environment.')
         toolset.add_function(edit_file, description='Replace a unique occurrence of text in a file.')
         toolset.add_function(ls, description='List the contents of a directory.')
+        toolset.add_function(grep, description='Search a file or directory tree for a literal pattern.')
 
         return toolset

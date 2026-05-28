@@ -10,7 +10,9 @@ import os
 from pathlib import Path
 
 import pytest
+from inline_snapshot import snapshot
 
+from pydantic_ai_harness.environments.abstract import AbstractMatch
 from pydantic_ai_harness.environments.exceptions import (
     EnvPermissionError,
     EnvReadError,
@@ -129,3 +131,38 @@ async def test_ls_symlink_loop_raises_read_error(tmp_path: Path) -> None:
     env = LocalEnvironment(root=str(tmp_path))
     with pytest.raises(EnvReadError):
         await env.ls('a')
+
+
+@skip_if_root
+async def test_grep_unreadable_file_in_tree_is_skipped(tmp_path: Path) -> None:
+    # A per-file permission failure mid-walk is swallowed (same skip path as a binary file),
+    # so the search continues and still returns matches from the readable files. POSIX/uid
+    # specific (root bypasses the bits), hence local-only + skip_if_root.
+    box = tmp_path / 'dir'
+    box.mkdir()
+    (box / 'unreadable.txt').write_text('NEEDLE')
+    (box / 'readable.txt').write_text('NEEDLE')
+    (box / 'no-match.txt').write_text('nothing')
+    (box / 'unreadable.txt').chmod(0o000)
+    try:
+        env = LocalEnvironment(root=str(tmp_path))
+        assert await env.grep('dir', 'NEEDLE') == snapshot(
+            [AbstractMatch(path='dir/readable.txt', line='NEEDLE', lineno=1)]
+        )
+    finally:
+        (box / 'unreadable.txt').chmod(0o644)  # let tmp_path cleanup remove it
+
+
+@skip_if_root
+async def test_grep_unreadable_top_path_raises_permission(tmp_path: Path) -> None:
+    # When the TOP path (the argument) is unreadable, grep raises -- it is not a per-file
+    # skip. This exercises the `os.access` guard clause that os.walk could not surface.
+    box = tmp_path / 'locked'
+    box.mkdir()
+    box.chmod(0o000)
+    try:
+        env = LocalEnvironment(root=str(tmp_path))
+        with pytest.raises(EnvPermissionError):
+            await env.grep('locked', 'NEEDLE')
+    finally:
+        box.chmod(0o755)  # let tmp_path cleanup remove it
