@@ -22,7 +22,12 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from pydantic_ai_harness.environments.abstract import AbstractEnvironment, AbstractFile, AbstractMatch
+from pydantic_ai_harness.environments.abstract import (
+    AbstractEnvironment,
+    AbstractFile,
+    AbstractMatch,
+    ShellCommandResult,
+)
 from pydantic_ai_harness.environments.exceptions import (
     EnvIsADirectoryError,
     EnvNotADirectoryError,
@@ -58,6 +63,9 @@ class _RaisingEnvironment(AbstractEnvironment):
     async def glob(self, path: str, pattern: str) -> list[str]:
         raise self.error
 
+    async def shell_command(self, command: str, timeout: int | None = None) -> ShellCommandResult:
+        raise self.error
+
 
 @dataclass(kw_only=True)
 class _StoreEnvironment(AbstractEnvironment):
@@ -85,6 +93,9 @@ class _StoreEnvironment(AbstractEnvironment):
     async def glob(self, path: str, pattern: str) -> list[str]:
         # Returned deliberately out of sorted order to prove the capability sorts.
         return ['sub/b.py', 'a.py', 'sub/a.py']
+
+    async def shell_command(self, command: str, timeout: int | None = None) -> ShellCommandResult:
+        return ShellCommandResult(stdout=self.data, stderr=b'', return_code=0, timed_out=False)
 
 
 def _ctx() -> RunContext[None]:

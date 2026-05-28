@@ -18,7 +18,7 @@ TruncatedBy: TypeAlias = Literal['lines', 'bytes'] | None
 
 
 @dataclass(kw_only=True, frozen=True)
-class HeadTruncationResult:
+class TruncationResult:
     """What fit under the caps, and why we stopped. The caller turns this into a note."""
 
     truncated_lines: list[str]
@@ -42,12 +42,12 @@ def format_size(num_bytes: int) -> str:
     return f'{num_bytes / (1024 * 1024):.1f}MB'
 
 
-def truncate_head(lines: list[str]) -> HeadTruncationResult:
+def truncate_head(lines: list[str]) -> TruncationResult:
     """Keep the first lines that fit under both caps; never emit a partial line."""
     # A line wider than the byte cap can't be shown partially (we never split a line),
     # so keep nothing and flag it -- the caller reports the line's size and omits it.
     if lines and len(lines[0].encode('utf-8')) > DEFAULT_MAX_BYTES:
-        return HeadTruncationResult(truncated_lines=[], truncated_by='bytes', first_line_exceeded=True)
+        return TruncationResult(truncated_lines=[], truncated_by='bytes', first_line_exceeded=True)
 
     kept: list[str] = []
     running_byte_size = 0
@@ -67,4 +67,28 @@ def truncate_head(lines: list[str]) -> HeadTruncationResult:
         running_byte_size += cost
 
     # Loop completed without breaking => kept everything => truncated_by stays None.
-    return HeadTruncationResult(truncated_lines=kept, truncated_by=truncated_by)
+    return TruncationResult(truncated_lines=kept, truncated_by=truncated_by)
+
+
+def truncate_tail(lines: list[str]) -> TruncationResult:
+    """Keep the last lines that fit under both caps; never emit a partial line."""
+    if lines and len(lines[-1].encode('utf-8')) > DEFAULT_MAX_BYTES:
+        return TruncationResult(truncated_lines=[], truncated_by='bytes', first_line_exceeded=True)
+
+    kept: list[str] = []
+    running_byte_size = 0
+    truncated_by: TruncatedBy = None
+
+    for line in reversed(lines):
+        if len(kept) >= DEFAULT_MAX_LINES:
+            truncated_by = 'lines'
+            break
+        cost = len(line.encode('utf-8')) + (1 if kept else 0)
+        if running_byte_size + cost > DEFAULT_MAX_BYTES:
+            truncated_by = 'bytes'
+            break
+        kept.append(line)
+        running_byte_size += cost
+
+    # Loop completed without breaking => kept everything => truncated_by stays None.
+    return TruncationResult(truncated_lines=kept[::-1], truncated_by=truncated_by)
