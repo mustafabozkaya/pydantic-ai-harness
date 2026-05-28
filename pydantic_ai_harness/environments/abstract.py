@@ -149,7 +149,7 @@ class AbstractEnvironment(ABC):
         raise NotImplementedError  # pragma: no cover
 
     @abstractmethod
-    async def shell_command(self, command: str, timeout: int | None = None) -> ShellCommandResult:
+    async def shell_command(self, command: str, timeout: float | None = None) -> ShellCommandResult:
         """Run `command` in a shell and return its captured output and exit code.
 
         The command is shell-interpreted (pipes, `&&`, globs all work) and runs in a fresh process; no

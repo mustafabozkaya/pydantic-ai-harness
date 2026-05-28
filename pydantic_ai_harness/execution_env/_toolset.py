@@ -288,7 +288,7 @@ def _format_shell_result(header: str | None, stdout: str, stderr: str) -> str:
     return '\n'.join(parts)
 
 
-async def _shell(environment: AbstractEnvironment, command: str, timeout: int | None) -> str:
+async def _shell(environment: AbstractEnvironment, command: str, timeout: float | None) -> str:
     """Run a shell command and present its result as text.
 
     No try/except for EnvShellExecutionError on purpose: that means "the environment couldn't start a
@@ -404,7 +404,7 @@ def build_toolset(
     async def shell(
         command: Annotated[str, Field(description='The shell command to run.')],
         timeout: Annotated[
-            int | None,
+            float | None,
             Field(
                 description='Seconds before the process tree is killed and the result returned with `timed_out=True`. `None` means no timeout.'
             ),

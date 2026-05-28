@@ -8,6 +8,7 @@ concerns differently, so they are deliberately not part of the shared conformanc
 
 import asyncio
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from pydantic_ai_harness.environments.abstract import AbstractMatch
 from pydantic_ai_harness.environments.exceptions import (
     EnvPermissionError,
     EnvReadError,
+    EnvShellExecutionError,
     PathEscapeError,
 )
 from pydantic_ai_harness.environments.local import LocalEnvironment
@@ -233,3 +235,14 @@ async def test_sigkill_escalation_kills_stubborn_child(tmp_path: Path, monkeypat
     assert result.timed_out is True
     await asyncio.sleep(3)
     assert not marker.exists()
+
+
+async def test_no_shell_raises_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    env = LocalEnvironment(root=str(tmp_path))
+
+    def _no_shell(_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(shutil, 'which', _no_shell)
+    with pytest.raises(EnvShellExecutionError):
+        await env.shell_command('echo "hello"')
