@@ -9,24 +9,24 @@ class PathEscapeError(ExecutionEnvironmentError):
     """Path escape error."""
 
 
-class EnvFileNotFoundError(ExecutionEnvironmentError):
-    """File not found in the environment."""
+class EnvNotFoundError(ExecutionEnvironmentError):
+    """Nothing exists at the path in the environment."""
 
 
-class EnvFilePermissionError(ExecutionEnvironmentError):
-    """File permission error."""
+class EnvPermissionError(ExecutionEnvironmentError):
+    """The backend may not access the path."""
 
 
-class EnvFileIsADirectoryError(ExecutionEnvironmentError):
-    """File is a directory."""
+class EnvIsADirectoryError(ExecutionEnvironmentError):
+    """The path is a directory, but the operation requires a file."""
 
 
-class EnvFileNotADirectoryError(ExecutionEnvironmentError):
-    """File is not a directory."""
+class EnvNotADirectoryError(ExecutionEnvironmentError):
+    """A component of the path is not a directory."""
 
 
-class EnvFileTooLargeError(ExecutionEnvironmentError):
-    """File too large."""
+class EnvTooLargeError(ExecutionEnvironmentError):
+    """The file exceeds the size the operation allows."""
 
 
 class EnvReadError(ExecutionEnvironmentError):

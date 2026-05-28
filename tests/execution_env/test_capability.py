@@ -24,10 +24,10 @@ from pydantic_ai.usage import RunUsage
 
 from pydantic_ai_harness.environments.abstract import AbstractEnvironment, AbstractFile
 from pydantic_ai_harness.environments.exceptions import (
-    EnvFileIsADirectoryError,
-    EnvFileNotADirectoryError,
-    EnvFileNotFoundError,
-    EnvFilePermissionError,
+    EnvIsADirectoryError,
+    EnvNotADirectoryError,
+    EnvNotFoundError,
+    EnvPermissionError,
     EnvReadError,
     EnvWriteError,
     ExecutionEnvironmentError,
@@ -134,10 +134,10 @@ async def _ls(environment: AbstractEnvironment, *, path: str = 'd') -> object:
 @pytest.mark.parametrize(
     'error',
     [
-        EnvFileNotFoundError('not found'),
-        EnvFilePermissionError('not readable'),
-        EnvFileIsADirectoryError('is a directory'),
-        EnvFileNotADirectoryError('not a directory'),
+        EnvNotFoundError('not found'),
+        EnvPermissionError('not readable'),
+        EnvIsADirectoryError('is a directory'),
+        EnvNotADirectoryError('not a directory'),
         PathEscapeError('outside root'),
     ],
 )
@@ -211,7 +211,7 @@ async def test_read_first_line_too_big_is_omitted() -> None:
 
 async def test_write_permission_error_is_model_retry() -> None:
     with pytest.raises(ModelRetry):
-        await _write(_RaisingEnvironment(root='/x', error=EnvFilePermissionError('read only')))
+        await _write(_RaisingEnvironment(root='/x', error=EnvPermissionError('read only')))
 
 
 async def test_write_infra_error_propagates() -> None:
@@ -257,7 +257,7 @@ async def test_edit_noop_is_model_retry() -> None:
 
 async def test_edit_missing_file_is_model_retry() -> None:
     with pytest.raises(ModelRetry):
-        await _edit(_RaisingEnvironment(root='/x', error=EnvFileNotFoundError('nope')), old_string='a', new_string='b')
+        await _edit(_RaisingEnvironment(root='/x', error=EnvNotFoundError('nope')), old_string='a', new_string='b')
 
 
 async def test_edit_path_escape_is_model_retry() -> None:
@@ -279,7 +279,7 @@ async def test_edit_write_permission_error_is_model_retry() -> None:
     @dataclass(kw_only=True)
     class _ReadOkWriteDenied(_StoreEnvironment):
         async def write_file(self, path: str, data: bytes) -> None:
-            raise EnvFilePermissionError('read only')
+            raise EnvPermissionError('read only')
 
     with pytest.raises(ModelRetry):
         await _edit(_ReadOkWriteDenied(root='/x', data=b'hello world'), old_string='world', new_string='there')
@@ -306,10 +306,10 @@ async def test_ls_formats_directory_suffix() -> None:
 @pytest.mark.parametrize(
     'error',
     [
-        EnvFileNotFoundError('not found'),
-        EnvFilePermissionError('not listable'),
-        EnvFileIsADirectoryError('is a directory'),
-        EnvFileNotADirectoryError('not a directory'),
+        EnvNotFoundError('not found'),
+        EnvPermissionError('not listable'),
+        EnvIsADirectoryError('is a directory'),
+        EnvNotADirectoryError('not a directory'),
         PathEscapeError('outside root'),
     ],
 )

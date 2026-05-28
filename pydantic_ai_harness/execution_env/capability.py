@@ -11,10 +11,10 @@ from pydantic_ai.tools import AgentDepsT
 
 from ..environments.abstract import AbstractEnvironment
 from ..environments.exceptions import (
-    EnvFileIsADirectoryError,
-    EnvFileNotADirectoryError,
-    EnvFileNotFoundError,
-    EnvFilePermissionError,
+    EnvIsADirectoryError,
+    EnvNotADirectoryError,
+    EnvNotFoundError,
+    EnvPermissionError,
     EnvReadError,
     EnvWriteError,
     PathEscapeError,
@@ -48,10 +48,10 @@ async def _read_file(environment: AbstractEnvironment, path: str, offset: int | 
         get_current_span().add_event('path_escape_attempt', {'path': path})
         raise ModelRetry(str(e)) from e
     except (
-        EnvFileNotFoundError,
-        EnvFilePermissionError,
-        EnvFileIsADirectoryError,
-        EnvFileNotADirectoryError,
+        EnvNotFoundError,
+        EnvPermissionError,
+        EnvIsADirectoryError,
+        EnvNotADirectoryError,
     ) as e:
         raise ModelRetry(str(e)) from e
     except (EnvReadError,):
@@ -139,10 +139,10 @@ async def _edit_file(
         get_current_span().add_event('path_escape_attempt', {'path': path})
         raise ModelRetry(str(e)) from e
     except (
-        EnvFileNotFoundError,
-        EnvFilePermissionError,
-        EnvFileIsADirectoryError,
-        EnvFileNotADirectoryError,
+        EnvNotFoundError,
+        EnvPermissionError,
+        EnvIsADirectoryError,
+        EnvNotADirectoryError,
     ) as e:
         raise ModelRetry(str(e)) from e
     except (EnvReadError,):
@@ -174,7 +174,7 @@ async def _edit_file(
 
     try:
         await environment.write_file(path, new_text.encode('utf-8'))
-    except EnvFilePermissionError as e:
+    except EnvPermissionError as e:
         raise ModelRetry(str(e)) from e
     except (EnvWriteError,):
         # TODO: This should be a ToolFailed error when I merge that in
@@ -209,7 +209,7 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
             """Write a file to the execution environment."""
             try:
                 await self.environment.write_file(path, data.encode('utf-8'))
-            except EnvFilePermissionError as e:
+            except EnvPermissionError as e:
                 raise ModelRetry(str(e)) from e
             except (EnvWriteError,):
                 # TODO: This should be a ToolFailed error when I merge that in
@@ -238,10 +238,10 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
                 get_current_span().add_event('path_escape_attempt', {'path': path})
                 raise ModelRetry(str(e)) from e
             except (
-                EnvFileNotFoundError,
-                EnvFilePermissionError,
-                EnvFileIsADirectoryError,
-                EnvFileNotADirectoryError,
+                EnvNotFoundError,
+                EnvPermissionError,
+                EnvIsADirectoryError,
+                EnvNotADirectoryError,
             ) as e:
                 raise ModelRetry(str(e)) from e
             except (EnvReadError,):

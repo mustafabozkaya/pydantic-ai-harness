@@ -6,10 +6,10 @@ from pathlib import Path
 
 from .abstract import AbstractEnvironment, AbstractFile
 from .exceptions import (
-    EnvFileIsADirectoryError,
-    EnvFileNotADirectoryError,
-    EnvFileNotFoundError,
-    EnvFilePermissionError,
+    EnvIsADirectoryError,
+    EnvNotADirectoryError,
+    EnvNotFoundError,
+    EnvPermissionError,
     EnvReadError,
     EnvWriteError,
     PathEscapeError,
@@ -45,15 +45,13 @@ class LocalEnvironment(AbstractEnvironment):
         try:
             return resolved_path.read_bytes()
         except FileNotFoundError as e:
-            raise EnvFileNotFoundError(f'{path!r} not found in the environment root {self.root!r}: {str(e)}')
+            raise EnvNotFoundError(f'{path!r} not found in the environment root {self.root!r}: {str(e)}')
         except PermissionError as e:
-            raise EnvFilePermissionError(f'{path!r} is not readable by the environment root {self.root!r}: {str(e)}')
+            raise EnvPermissionError(f'{path!r} is not readable by the environment root {self.root!r}: {str(e)}')
         except IsADirectoryError as e:
-            raise EnvFileIsADirectoryError(f'{path!r} is a directory in the environment root {self.root!r}: {str(e)}')
+            raise EnvIsADirectoryError(f'{path!r} is a directory in the environment root {self.root!r}: {str(e)}')
         except NotADirectoryError as e:
-            raise EnvFileNotADirectoryError(
-                f'{path!r} is not a directory in the environment root {self.root!r}: {str(e)}'
-            )
+            raise EnvNotADirectoryError(f'{path!r} is not a directory in the environment root {self.root!r}: {str(e)}')
         except OSError as e:
             raise EnvReadError(f'{path!r} could not be read in the environment root {self.root!r}: {str(e)}')
 
@@ -69,7 +67,7 @@ class LocalEnvironment(AbstractEnvironment):
             resolved_path.write_bytes(data)
         # If file isn't present we should create it so we need a test to make sure that is the case
         except PermissionError as e:
-            raise EnvFilePermissionError(f'{path!r} is not writable by the environment root {self.root!r}: {str(e)}')
+            raise EnvPermissionError(f'{path!r} is not writable by the environment root {self.root!r}: {str(e)}')
         except OSError as e:
             raise EnvWriteError(f'{path!r} could not be written to the environment root {self.root!r}: {str(e)}')
 
@@ -91,12 +89,10 @@ class LocalEnvironment(AbstractEnvironment):
             with os.scandir(resolved_path) as entries:
                 return [AbstractFile(name=e.name, is_directory=e.is_dir(follow_symlinks=False)) for e in entries]
         except FileNotFoundError as e:
-            raise EnvFileNotFoundError(f'{path!r} not found in the environment root {self.root!r}: {str(e)}')
+            raise EnvNotFoundError(f'{path!r} not found in the environment root {self.root!r}: {str(e)}')
         except PermissionError as e:
-            raise EnvFilePermissionError(f'{path!r} is not listable by the environment root {self.root!r}: {str(e)}')
+            raise EnvPermissionError(f'{path!r} is not listable by the environment root {self.root!r}: {str(e)}')
         except NotADirectoryError as e:
-            raise EnvFileNotADirectoryError(
-                f'{path!r} is not a directory in the environment root {self.root!r}: {str(e)}'
-            )
+            raise EnvNotADirectoryError(f'{path!r} is not a directory in the environment root {self.root!r}: {str(e)}')
         except OSError as e:
             raise EnvReadError(f'{path!r} could not be listed in the environment root {self.root!r}: {str(e)}')

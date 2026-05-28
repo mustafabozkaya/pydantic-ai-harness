@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from pydantic_ai_harness.environments.exceptions import (
-    EnvFilePermissionError,
+    EnvPermissionError,
     EnvReadError,
     PathEscapeError,
 )
@@ -73,7 +73,7 @@ async def test_read_unreadable_file_raises_permission(tmp_path: Path) -> None:
     target.chmod(0o000)
     try:
         env = LocalEnvironment(root=str(tmp_path))
-        with pytest.raises(EnvFilePermissionError):
+        with pytest.raises(EnvPermissionError):
             await env.read_file('locked.txt')
     finally:
         target.chmod(0o644)  # let tmp_path cleanup remove it
@@ -86,7 +86,7 @@ async def test_write_into_readonly_dir_raises_permission(tmp_path: Path) -> None
     box.chmod(0o555)
     try:
         env = LocalEnvironment(root=str(tmp_path))
-        with pytest.raises(EnvFilePermissionError):
+        with pytest.raises(EnvPermissionError):
             await env.write_file('readonly/new.txt', b'nope')
     finally:
         box.chmod(0o755)
@@ -112,7 +112,7 @@ async def test_ls_unlistable_directory_raises_permission(tmp_path: Path) -> None
     box.chmod(0o000)
     try:
         env = LocalEnvironment(root=str(tmp_path))
-        with pytest.raises(EnvFilePermissionError):
+        with pytest.raises(EnvPermissionError):
             await env.ls('locked')
     finally:
         box.chmod(0o755)  # let tmp_path cleanup remove it

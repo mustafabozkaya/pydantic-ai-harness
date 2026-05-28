@@ -12,9 +12,9 @@ import pytest
 
 from pydantic_ai_harness.environments.abstract import AbstractEnvironment
 from pydantic_ai_harness.environments.exceptions import (
-    EnvFileIsADirectoryError,
-    EnvFileNotADirectoryError,
-    EnvFileNotFoundError,
+    EnvIsADirectoryError,
+    EnvNotADirectoryError,
+    EnvNotFoundError,
     EnvWriteError,
     PathEscapeError,
 )
@@ -36,13 +36,13 @@ async def test_write_creates_missing_file(environment: AbstractEnvironment, tmp_
 
 
 async def test_read_missing_file_raises_not_found(environment: AbstractEnvironment) -> None:
-    with pytest.raises(EnvFileNotFoundError):
+    with pytest.raises(EnvNotFoundError):
         await environment.read_file('does-not-exist.txt')
 
 
 async def test_read_directory_raises_is_a_directory(environment: AbstractEnvironment, tmp_path: Path) -> None:
     (tmp_path / 'subdir').mkdir()
-    with pytest.raises(EnvFileIsADirectoryError):
+    with pytest.raises(EnvIsADirectoryError):
         await environment.read_file('subdir')
 
 
@@ -51,7 +51,7 @@ async def test_read_through_file_component_raises_not_a_directory(
 ) -> None:
     # A path that treats a regular file as if it were a directory.
     (tmp_path / 'file.txt').write_bytes(b'x')
-    with pytest.raises(EnvFileNotADirectoryError):
+    with pytest.raises(EnvNotADirectoryError):
         await environment.read_file('file.txt/inner')
 
 
@@ -81,13 +81,13 @@ async def test_ls_lists_entries_with_types(environment: AbstractEnvironment, tmp
 
 
 async def test_ls_missing_directory_raises_not_found(environment: AbstractEnvironment) -> None:
-    with pytest.raises(EnvFileNotFoundError):
+    with pytest.raises(EnvNotFoundError):
         await environment.ls('does-not-exist')
 
 
 async def test_ls_on_a_file_raises_not_a_directory(environment: AbstractEnvironment, tmp_path: Path) -> None:
     (tmp_path / 'file.txt').write_bytes(b'x')
-    with pytest.raises(EnvFileNotADirectoryError):
+    with pytest.raises(EnvNotADirectoryError):
         await environment.ls('file.txt')
 
 
