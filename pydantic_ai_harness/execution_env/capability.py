@@ -186,7 +186,16 @@ async def _edit_file(
 
 @dataclass
 class ExecutionEnv(AbstractCapability[AgentDepsT]):
-    """Capability that exposes the execution environment to the agent."""
+    """Capability that exposes the execution environment to the agent.
+
+    Bounds are applied at this presentation layer, not in the backend: `read_file`
+    fetches the whole file then windows/truncates it, and `ls` fetches the whole
+    listing then caps it. On a remote backend this ships bytes/entries over the wire
+    only to discard the tail -- a real cost we accept for now rather than push limits
+    into the backend contract, which would grow the surface area every backend must
+    implement correctly. Keeping every tool consistent here is the deliberate trade-off;
+    revisit it for all of them together if a remote backend's cost says otherwise.
+    """
 
     environment: AbstractEnvironment
 
@@ -233,9 +242,11 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
         ) -> list[str]:
             """List the contents of a directory."""
             try:
+                # `limit` caps the listing here at the presentation layer; see the class
+                # docstring for why the bound lives here and not in the backend contract.
+                # (`[:None]` is the whole list, so this single expression covers the unbounded case.)
                 ls_result = await self.environment.ls(path)
-                entries = ls_result if limit is None else ls_result[:limit]
-                return [file.name + ('/' if file.is_directory else '') for file in entries]
+                return [file.name + ('/' if file.is_directory else '') for file in ls_result[:limit]]
             except PathEscapeError as e:
                 get_current_span().add_event('path_escape_attempt', {'path': path})
                 raise ModelRetry(str(e)) from e

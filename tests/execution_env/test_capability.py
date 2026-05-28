@@ -120,12 +120,15 @@ async def _edit(
     return await toolset.call_tool('edit_file', args, ctx, tools['edit_file'])
 
 
-async def _ls(environment: AbstractEnvironment, *, path: str = 'd') -> object:
+async def _ls(environment: AbstractEnvironment, *, path: str = 'd', limit: int | None = None) -> object:
     """Invoke the ls tool through its toolset."""
     toolset = ExecutionEnv(environment=environment).get_toolset()
     ctx = _ctx()
     tools = await toolset.get_tools(ctx)
-    return await toolset.call_tool('ls', {'path': path}, ctx, tools['ls'])
+    args: dict[str, object] = {'path': path}
+    if limit is not None:
+        args['limit'] = limit
+    return await toolset.call_tool('ls', args, ctx, tools['ls'])
 
 
 # --- read_file: error routing -------------------------------------------------
@@ -301,6 +304,11 @@ async def test_edit_write_infra_error_propagates() -> None:
 async def test_ls_formats_directory_suffix() -> None:
     # `/` appended to directories, plain name otherwise -- exercises both branches.
     assert await _ls(_StoreEnvironment(root='/x', data=b'')) == ['sub/', 'file.txt']
+
+
+async def test_ls_limit_truncates_listing() -> None:
+    # `limit` caps the entries at the presentation layer; the tail is dropped.
+    assert await _ls(_StoreEnvironment(root='/x', data=b''), limit=1) == ['sub/']
 
 
 @pytest.mark.parametrize(
