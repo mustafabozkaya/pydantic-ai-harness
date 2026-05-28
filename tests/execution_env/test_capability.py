@@ -303,12 +303,14 @@ async def test_edit_write_infra_error_propagates() -> None:
 
 async def test_ls_formats_directory_suffix() -> None:
     # `/` appended to directories, plain name otherwise -- exercises both branches.
-    assert await _ls(_StoreEnvironment(root='/x', data=b'')) == ['sub/', 'file.txt']
+    # Sorted by name: 'file.txt' < 'sub', so the file comes first regardless of input order.
+    assert await _ls(_StoreEnvironment(root='/x', data=b'')) == ['file.txt', 'sub/']
 
 
 async def test_ls_limit_truncates_listing() -> None:
-    # `limit` caps the entries at the presentation layer; the tail is dropped.
-    assert await _ls(_StoreEnvironment(root='/x', data=b''), limit=1) == ['sub/']
+    # `limit` caps the entries at the presentation layer; the tail is dropped. The cap is
+    # applied AFTER the name sort, so it takes a deterministic prefix ('file.txt' first).
+    assert await _ls(_StoreEnvironment(root='/x', data=b''), limit=1) == ['file.txt']
 
 
 @pytest.mark.parametrize(

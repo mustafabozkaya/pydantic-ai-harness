@@ -242,9 +242,11 @@ class ExecutionEnv(AbstractCapability[AgentDepsT]):
         ) -> list[str]:
             """List the contents of a directory."""
             try:
-                # `limit` caps the listing here at the presentation layer; see the class
-                # docstring for why the bound lives here and not in the backend contract.
-                # (`[:None]` is the whole list, so this single expression covers the unbounded case.)
+                # Sort by name (Unicode code point, deliberately NOT locale-aware) before
+                # capping, so the listing is deterministic across runs and backends and the
+                # `[:limit]` slice takes a stable prefix instead of an arbitrary one. `limit`
+                # caps here at the presentation layer; see the class docstring for why the bound
+                # lives here and not in the backend contract. (`[:None]` is the whole list.)
                 ls_result = await self.environment.ls(path)
                 ls_result.sort(key=lambda f: f.name)
                 return [file.name + ('/' if file.is_directory else '') for file in ls_result[:limit]]
