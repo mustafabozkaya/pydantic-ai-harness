@@ -225,25 +225,40 @@ class LocalEnvironment(AbstractEnvironment):
             # killpg + getpgid, not proc.kill(): we signal the whole GROUP (created by setsid above) so
             # forked children don't orphan to init and keep running/billing. SIGTERM first (catchable)
             # gives the tree a chance to flush/clean up.
-            # FIXME: getpgid/killpg raise ProcessLookupError if the process already exited between the
-            # timeout and here (and again between SIGTERM and SIGKILL) -- guard "already dead = success".
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            # ProcessLookupError = the process already exited in the window between the timeout firing
+            # and this signal (a TOCTOU race, same shape as the filesystem jail). Already dead is the
+            # outcome we wanted, so swallow it -- there's nothing left to kill.
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             # Grace period: asyncio's child watcher updates proc.returncode in the background while the
             # loop runs, so after sleeping we can tell whether SIGTERM actually killed it.
             await asyncio.sleep(5)
             if proc.returncode is None:
                 # Ignored SIGTERM (or wedged) -> SIGKILL is uncatchable, guaranteed teardown. We
-                # escalate rather than leak an orphan on a remote/billing backend.
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                # escalate rather than leak an orphan on a remote/billing backend. Same race guard:
+                # SIGTERM may have landed during the grace sleep, so the group can be gone by now.
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
             # Even though proc died there will be some partial stuff in the pipes so let us get that out
-            # FIXME: proc.stdout/proc.stderr are StreamReader objects, not bytes -- this assigns the
-            # wrong type to a bytes field. Drain them instead, e.g. `await proc.stdout.read()` (guard
-            # for None), or restructure so communicate()'s partial output is captured.
-            stdout, stderr = proc.stdout, proc.stderr
+            if proc.stdout is not None:
+                stdout = await proc.stdout.read()
+            if proc.stderr is not None:
+                stderr = await proc.stderr.read()
             # Reap the zombie: we're the parent, so the dead process lingers in the process table
             # holding its exit status + fds until we wait(). Also yields the final returncode.
             await proc.wait()
             timed_out = True
 
-        return ShellCommandResult(stdout=stdout, stderr=stderr, return_code=proc.returncode, timed_out=timed_out)
+        assert proc.returncode is not None
+
+        return ShellCommandResult(
+            stdout=stdout,
+            stderr=stderr,
+            return_code=proc.returncode,
+            timed_out=timed_out,
+        )
