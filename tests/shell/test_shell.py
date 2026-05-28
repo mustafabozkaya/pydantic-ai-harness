@@ -244,6 +244,35 @@ class TestCommandValidation:
         )
         ts._check_command('')
 
+    def test_first_denied_operator_match(self, toolset: ShellToolset) -> None:
+        ts = ShellToolset(
+            cwd=Path('/tmp'),
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=['|', '>'],
+            default_timeout=10.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        assert ts._first_denied_operator('echo hi | cat') == '|'
+
+    def test_first_denied_operator_no_match(self, toolset: ShellToolset) -> None:
+        ts = ShellToolset(
+            cwd=Path('/tmp'),
+            allowed_commands=[],
+            denied_commands=[],
+            denied_operators=['|', '>'],
+            default_timeout=10.0,
+            max_output_chars=50_000,
+            persist_cwd=False,
+            allow_interactive=False,
+        )
+        assert ts._first_denied_operator('echo hello') is None
+
+    def test_first_denied_operator_empty_list(self, toolset: ShellToolset) -> None:
+        assert toolset._first_denied_operator('echo hi | cat') is None
+
 
 class TestTruncation:
     def test_within_limit(self, toolset: ShellToolset) -> None:

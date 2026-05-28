@@ -107,12 +107,21 @@ class ShellToolset(FunctionToolset[Any]):
             self._cleanup_bg_files(bg)
         self._background.clear()
 
+    def _first_denied_operator(self, command: str) -> str | None:
+        """Return the first denied operator found in command, or None."""
+        return next((op for op in self._denied_operators if op in command), None)
+
     def _check_command(self, command: str) -> None:
-        """Validate command against allow/deny lists."""
+        """Validate command against allow/deny lists.
+
+        These checks are best-effort and are not a security boundary — a
+        sufficiently motivated agent can bypass them. Use OS-level isolation
+        (containers, sandboxes) for hard enforcement.
+        """
         if not self._allow_interactive and _is_interactive_command(command):
             raise PermissionError(f'Interactive commands are not allowed. Command: {command!r}')
 
-        matched_op = next((op for op in self._denied_operators if op in command), None)
+        matched_op = self._first_denied_operator(command)
         if matched_op:
             raise PermissionError(f'Shell operator {matched_op!r} is not allowed.')
 

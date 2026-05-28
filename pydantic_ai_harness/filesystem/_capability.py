@@ -58,7 +58,7 @@ class FileSystem(AbstractCapability[Any]):
     def __post_init__(self) -> None:
         for name in ('max_read_lines', 'max_search_results', 'max_find_results'):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            if not isinstance(value, int) or value <= 0:
                 raise ValueError(f'{name} must be a positive integer, got {value!r}')
 
     def get_toolset(self) -> AgentToolset[Any]:

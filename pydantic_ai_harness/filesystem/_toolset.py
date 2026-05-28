@@ -13,9 +13,8 @@ from typing import Any
 from pydantic_ai.toolsets import FunctionToolset
 
 
-def _format_lines(text: str, offset: int, limit: int) -> str:
-    """Format text with line numbers and continuation hint."""
-    lines = text.splitlines(keepends=True)
+def _format_lines(lines: Sequence[str], offset: int, limit: int) -> str:
+    """Format pre-split lines with line numbers and continuation hint."""
     total = len(lines)
 
     if total == 0:
@@ -72,6 +71,7 @@ class FileSystemToolset(FunctionToolset[Any]):
     ) -> None:
         super().__init__()
         self._root = root_dir.resolve()
+        self._real_root = Path(os.path.realpath(self._root))
         self._allowed_patterns = list(allowed_patterns)
         self._denied_patterns = list(denied_patterns)
         self._protected_patterns = list(protected_patterns)
@@ -88,6 +88,10 @@ class FileSystemToolset(FunctionToolset[Any]):
         self.add_function(self.create_directory, name='create_directory')
         self.add_function(self.file_info, name='file_info')
 
+    def _first_matching_pattern(self, path: str, patterns: list[str]) -> str | None:
+        """Return the first pattern that matches path, or None."""
+        return next((p for p in patterns if fnmatch.fnmatch(path, p)), None)
+
     def _resolve_path(self, path: str) -> Path:
         """Resolve path relative to root, rejecting traversal.
 
@@ -95,8 +99,7 @@ class FileSystemToolset(FunctionToolset[Any]):
         """
         candidate = (self._root / path).resolve()
         real = Path(os.path.realpath(candidate))
-        real_root = Path(os.path.realpath(self._root))
-        if not real.is_relative_to(real_root):
+        if not real.is_relative_to(self._real_root):
             raise PermissionError(f'Path {path!r} resolves outside the root directory.')
 
         return real
@@ -104,12 +107,12 @@ class FileSystemToolset(FunctionToolset[Any]):
     def _check_access(self, path: str, *, write: bool = False) -> None:
         """Validate path against allow/deny/protected patterns."""
         if write and self._protected_patterns:
-            matched = next((p for p in self._protected_patterns if fnmatch.fnmatch(path, p)), None)
+            matched = self._first_matching_pattern(path, self._protected_patterns)
             if matched:
                 raise PermissionError(f'Path {path!r} is protected (matches {matched!r}).')
 
         if self._denied_patterns:
-            matched = next((p for p in self._denied_patterns if fnmatch.fnmatch(path, p)), None)
+            matched = self._first_matching_pattern(path, self._denied_patterns)
             if matched:
                 raise PermissionError(f'Path {path!r} is denied by pattern {matched!r}.')
 
@@ -147,11 +150,11 @@ class FileSystemToolset(FunctionToolset[Any]):
             return f'[Binary file: {size} bytes. Use a binary-aware tool to inspect.]'
 
         text = raw.decode('utf-8', errors='replace')
-        total_lines = len(text.splitlines())
+        lines = text.splitlines(keepends=True)
         content_hash = _content_hash(text)
 
-        header = f'[{path} | {total_lines} lines | hash:{content_hash}]\n'
-        return header + _format_lines(text, offset, limit)
+        header = f'[{path} | {len(lines)} lines | hash:{content_hash}]\n'
+        return header + _format_lines(lines, offset, limit)
 
     async def write_file(self, path: str, content: str, *, expected_hash: str | None = None) -> str:
         """Create or overwrite a file with conflict detection.
@@ -177,7 +180,9 @@ class FileSystemToolset(FunctionToolset[Any]):
                     f'got hash:{current_hash}). Re-read the file and retry.'
                 )
 
-        resolved.parent.mkdir(parents=True, exist_ok=True)
+        if not resolved.parent.exists():
+            parent_rel = str(resolved.parent.relative_to(self._root))
+            raise FileNotFoundError(f"Parent directory '{parent_rel}' does not exist. Use create_directory first.")
         resolved.write_text(content, encoding='utf-8')
         new_hash = _content_hash(content)
         lines = len(content.splitlines())
@@ -240,10 +245,9 @@ class FileSystemToolset(FunctionToolset[Any]):
             raise NotADirectoryError(f'Not a directory: {path}')
 
         entries: list[str] = []
-        real_root = Path(os.path.realpath(self._root))
         for entry in sorted(resolved.iterdir()):
             try:
-                rel = str(entry.relative_to(real_root))
+                rel = str(entry.relative_to(self._real_root))
             except ValueError:  # pragma: no cover
                 continue
             if entry.is_dir():
@@ -251,7 +255,7 @@ class FileSystemToolset(FunctionToolset[Any]):
             else:
                 try:
                     size = entry.stat().st_size
-                except OSError:  # pragma: no cover
+                except OSError:  # pragma: no cover  # file deleted between iterdir and stat
                     size = 0
                 entries.append(f'{rel}  ({size} bytes)')
         return '\n'.join(entries) if entries else '(empty directory)'
