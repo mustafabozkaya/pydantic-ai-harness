@@ -9,7 +9,7 @@ from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
 from pydantic_ai.capabilities._tool_search import ToolSearch as _ToolSearch
 from pydantic_ai.tools import AgentDepsT, ToolSelector
 
-from pydantic_ai_harness.code_mode._toolset import CodeModeToolset
+from pydantic_ai_harness.code_mode._toolset import CodeModeToolset, MontyMount, MontyOS
 
 
 @dataclass
@@ -34,6 +34,16 @@ class CodeMode(AbstractCapability[AgentDepsT]):
     # Sandbox only specific tools
     agent = Agent('openai:gpt-5', capabilities=[CodeMode(tools=['search', 'fetch'])])
     ```
+
+    Pass `os` (and/or `mount`) to give sandboxed code host-backed filesystem and
+    OS access -- without it, `pathlib`/`os` I/O and `datetime.now()` are
+    unavailable inside `run_code`:
+
+    ```python
+    from pydantic_monty import MountDir
+
+    agent = Agent('openai:gpt-5', capabilities=[CodeMode(mount=MountDir('/work', '/tmp/agent-work'))])
+    ```
     """
 
     tools: ToolSelector[AgentDepsT] = field(default='all')
@@ -48,10 +58,29 @@ class CodeMode(AbstractCapability[AgentDepsT]):
     max_retries: int = 3
     """Maximum number of retries for the `run_code` tool (syntax errors count as retries)."""
 
+    os: MontyOS | None = None
+    """Host-backed OS access for sandboxed code.
+
+    Pass a `pydantic_monty.AbstractOS` instance or a raw Monty OS callback
+    `(function_name, args, kwargs) -> result`. When set, `pathlib.Path`, `os`,
+    `datetime.datetime.now()`, and `datetime.date.today()` calls inside `run_code`
+    are routed to it instead of being unavailable. Scope it per request by giving
+    a stateful `AbstractOS` (e.g. one rooted at a per-user directory).
+    """
+
+    mount: MontyMount | None = None
+    """Host directory mount(s) exposed inside the sandbox as `pydantic_monty.MountDir`."""
+
     def get_ordering(self) -> CapabilityOrdering:
         """CodeMode wraps around ToolSearch so that search_tools stays native."""
         return CapabilityOrdering(position='outermost', wraps=[_ToolSearch])
 
     def get_wrapper_toolset(self, toolset: AbstractToolset[AgentDepsT]) -> AbstractToolset[AgentDepsT] | None:
         """Wrap the agent's assembled toolset, splitting it into native + sandboxed subsets if needed."""
-        return CodeModeToolset(wrapped=toolset, tool_selector=self.tools, max_retries=self.max_retries)
+        return CodeModeToolset(
+            wrapped=toolset,
+            tool_selector=self.tools,
+            max_retries=self.max_retries,
+            os=self.os,
+            mount=self.mount,
+        )

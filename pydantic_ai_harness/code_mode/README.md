@@ -140,22 +140,66 @@ for msg in result.all_messages():
             tool_returns = part.metadata['tool_returns'] # dict[str, ToolReturnPart]
 ```
 
+## Host-backed OS access
+
+By default the sandbox has no filesystem or clock: `os`/`pathlib` are importable but their I/O
+operations and `datetime.datetime.now()`/`datetime.date.today()` are unavailable. Pass `os` and/or
+`mount` to route those operations to a host-controlled implementation.
+
+```python
+from pydantic_monty import MountDir
+from pydantic_ai_harness import CodeMode
+
+# Expose a host directory inside the sandbox (read/write under /work):
+CodeMode(mount=MountDir('/work', '/tmp/agent-workspace'))
+
+# Or supply a custom OS implementation (an `AbstractOS` instance):
+from pydantic_monty import OSAccess
+CodeMode(os=OSAccess(environ={'STAGE': 'prod'}))
+
+# Or a raw callback `(function_name, args, kwargs) -> result`
+# (return `pydantic_monty.NOT_HANDLED` to fall back to Monty's default):
+from pydantic_monty import NOT_HANDLED
+
+def my_os(fn, args, kwargs):
+    if fn == 'os.getenv':
+        return lookup_secret(args[0])
+    return NOT_HANDLED
+
+CodeMode(os=my_os)
+```
+
+`os` accepts a `pydantic_monty.AbstractOS` instance or a raw callback; both are exposed as the
+`MontyOS` type alias. `mount` accepts one or more `pydantic_monty.MountDir`. To scope access per
+request (per user/session), pass a stateful `AbstractOS` -- for example one rooted at a
+caller-specific directory.
+
+When `os` or `mount` is set, the `run_code` description tells the model that `pathlib`, `os`,
+`datetime.now()`, and `date.today()` are routed to the host. `asyncio.sleep` and the `time` module
+remain unavailable regardless.
+
+> These options are Monty-specific: `CodeMode` is built directly on the Monty sandbox, so its OS
+> hooks use Monty's `AbstractOS`/`MountDir` types.
+
 ## Sandbox restrictions
 
 Code runs inside [Monty](https://github.com/pydantic/monty), a sandboxed Python subset. Key restrictions:
 
 - No class definitions
 - No third-party imports (allowed stdlib: `sys`, `typing`, `asyncio`, `math`, `json`, `re`, `datetime`, `os`, `pathlib`)
-- No wall-clock or timing primitives: `asyncio.sleep`, `datetime.datetime.now()`/`datetime.date.today()`, and the `time` module are unavailable
+- No wall-clock or timing primitives: `asyncio.sleep`, `datetime.datetime.now()`/`datetime.date.today()`, and the `time` module are unavailable -- unless you wire up host-backed OS access (see above), which enables `datetime.now()`/`date.today()` (but not `asyncio.sleep`/`time`)
 - No `import *`
+- Filesystem and `os` I/O are unavailable unless an `os`/`mount` is configured
 - Tools requiring approval or with deferred execution are excluded from the sandbox
 
 ## API
 
 ```python
 CodeMode(
-    tools: ToolSelector = 'all',   # 'all', list[str], callable, or dict
-    max_retries: int = 3,          # retries on sandbox execution errors
+    tools: ToolSelector = 'all',        # 'all', list[str], callable, or dict
+    max_retries: int = 3,               # retries on sandbox execution errors
+    os: MontyOS | None = None,          # AbstractOS instance or (fn, args, kwargs) callback
+    mount: MontyMount | None = None,    # MountDir | list[MountDir] of host directories
 )
 ```
 

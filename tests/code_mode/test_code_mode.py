@@ -24,6 +24,7 @@ from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.function import FunctionToolset
 from pydantic_ai.usage import RunUsage
 from pydantic_core import SchemaValidator, core_schema
+from pydantic_monty import NOT_HANDLED, MountDir, OSAccess, OsFunction
 from typing_extensions import TypedDict
 
 from pydantic_ai_harness import CodeMode
@@ -1852,6 +1853,111 @@ class TestToolSearchIntegration:
         assert ordering is not None
         assert ordering.position == 'outermost'
         assert ToolSearch in ordering.wraps
+
+
+class TestCodeModeOSAccess:
+    """`CodeMode(os=...)` / `mount=...` give sandboxed code host-backed OS access."""
+
+    async def test_description_default_keeps_no_wallclock_restriction(self) -> None:
+        """Without `os`/`mount`, the description keeps the no-wall-clock restriction."""
+        wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        description = (await wrapper.get_tools(build_run_context(None)))['run_code'].tool_def.description
+        assert description is not None
+        assert 'No wall-clock or timing primitives' in description
+        assert 'Host-backed OS access' not in description
+
+    async def test_description_with_os_callback_notes_host_access(self) -> None:
+        """An `os` callback swaps the restriction line for the host-access note."""
+
+        def os_cb(fn: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+            return NOT_HANDLED  # pragma: no cover - not invoked; this test only checks the description
+
+        wrapper = CodeMode[None](os=os_cb).get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        description = (await wrapper.get_tools(build_run_context(None)))['run_code'].tool_def.description
+        assert description is not None
+        assert 'Host-backed OS access' in description
+        assert 'No wall-clock or timing primitives' not in description
+
+    async def test_description_with_mount_notes_host_access(self, tmp_path: Any) -> None:
+        """A `mount` (without `os`) also enables the host-access note."""
+        wrapper = CodeMode[None](mount=MountDir('/work', str(tmp_path))).get_wrapper_toolset(
+            _build_function_toolset(add)
+        )
+        assert isinstance(wrapper, CodeModeToolset)
+        description = (await wrapper.get_tools(build_run_context(None)))['run_code'].tool_def.description
+        assert description is not None
+        assert 'Host-backed OS access' in description
+
+    async def test_description_host_access_note_shows_with_no_sandboxed_tools(self) -> None:
+        """The host-access note appears even when no tools are sandboxed (base description)."""
+
+        def os_cb(fn: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+            return NOT_HANDLED  # pragma: no cover - not invoked; this test only checks the description
+
+        # `tools=[]` leaves every tool native, so `run_code` exposes no callable functions.
+        wrapper = CodeMode[None](os=os_cb, tools=[]).get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        description = (await wrapper.get_tools(build_run_context(None)))['run_code'].tool_def.description
+        assert description is not None
+        assert 'Host-backed OS access' in description
+        assert 'functions are available inside the sandbox' not in description
+
+    async def test_os_callback_dispatches_inside_run_code(self) -> None:
+        """An `os` callback is threaded through `feed_start` and every `resume`, so OS calls
+        keep dispatching even after a tool call suspends and resumes the sandbox."""
+
+        def os_cb(fn: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+            if fn == 'os.getenv':
+                return 'envval'
+            return NOT_HANDLED  # pragma: no cover - sandbox only calls os.getenv here
+
+        wrapper = CodeMode[None](os=os_cb).get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        # The tool call forces a FunctionSnapshot -> FutureSnapshot round-trip; the os.getenv
+        # afterwards only resolves if `os` survived those resumes.
+        code = "import os\nx = await add(a=2, b=3)\nhome = os.getenv('THING')\n{'sum': x, 'home': home}"
+        result = await wrapper.call_tool('run_code', {'code': code}, ctx, tools['run_code'])
+        assert result.return_value == {'sum': 5, 'home': 'envval'}
+
+    async def test_abstract_os_instance_dispatches_inside_run_code(self) -> None:
+        """An `AbstractOS` instance is accepted as the `os` value and dispatches OS calls."""
+        wrapper = CodeMode[None](os=OSAccess(environ={'THING': 'fromabs'})).get_wrapper_toolset(
+            _build_function_toolset(add)
+        )
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        result = await wrapper.call_tool('run_code', {'code': "import os\nos.getenv('THING')"}, ctx, tools['run_code'])
+        assert result.return_value == 'fromabs'
+
+    async def test_mount_exposes_host_directory(self, tmp_path: Any) -> None:
+        """A `mount` exposes a host directory inside the sandbox, threaded through resumes."""
+        (tmp_path / 'data.txt').write_text('hello-from-host')
+        wrapper = CodeMode[None](mount=MountDir('/work', str(tmp_path))).get_wrapper_toolset(
+            _build_function_toolset(add)
+        )
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        code = "from pathlib import Path\nawait add(a=1, b=1)\nPath('/work/data.txt').read_text()"
+        result = await wrapper.call_tool('run_code', {'code': code}, ctx, tools['run_code'])
+        assert result.return_value == 'hello-from-host'
+
+    def test_capability_forwards_os_and_mount_to_toolset(self, tmp_path: Any) -> None:
+        """`CodeMode` forwards `os`/`mount` onto the `CodeModeToolset` it builds."""
+
+        def os_cb(fn: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+            return NOT_HANDLED  # pragma: no cover - never invoked; only identity is asserted
+
+        mount = MountDir('/work', str(tmp_path))
+        wrapper = CodeMode[None](os=os_cb, mount=mount).get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        assert wrapper.os is os_cb
+        assert wrapper.mount is mount
 
 
 def _search_tool_def(description: str = 'Search for tools.') -> ToolDefinition:
