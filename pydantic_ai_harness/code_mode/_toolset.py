@@ -90,11 +90,18 @@ The sandbox uses Monty, a subset of Python. Key restrictions:
 - **No third-party libraries**: only the standard library modules listed below can be used
 - **Importable standard library modules**: `sys`, `typing`, `asyncio`, `math`, `json`, `re`, `datetime`, `os`, `pathlib`. These must be imported at the top of your snippet before use, just like in regular Python. For example: `import asyncio` then `results = await asyncio.gather(tool_one(...), tool_two(...))`."""
 
-# Timing/OS restriction line, swapped depending on whether the agent configured
-# host-backed OS access (`CodeMode(os=...)` / `mount=...`).
+# Timing/OS restriction line, swapped depending on what host access the agent
+# configured. Three states, because `mount` and `os` enable different things:
+# a `mount` only exposes filesystem paths, while environment and clock calls
+# require an `os` handler.
 _NO_OS_RESTRICTION = (
     '- **No wall-clock or timing primitives**: `asyncio.sleep`, `datetime.datetime.now()`, '
     '`datetime.date.today()`, and the `time` module are unavailable.'
+)
+_MOUNT_ONLY_NOTE = (
+    '- **Mounted filesystem access**: `pathlib.Path` operations under the configured mount '
+    'point(s) are routed to the host. `os.getenv`/`os.environ`, `datetime.datetime.now()`, '
+    '`datetime.date.today()`, `asyncio.sleep`, and the `time` module remain unavailable.'
 )
 _OS_ENABLED_NOTE = (
     '- **Host-backed OS access**: `pathlib.Path` operations, `os.getenv`/`os.environ`, '
@@ -117,14 +124,23 @@ Returns the last expression's value directly. If `print()` was also called, retu
 """
 
 
-def _base_description(*, os_enabled: bool) -> str:
-    """Assemble the `run_code` base description, swapping the OS-access line.
+def _os_access_restriction(*, has_os: bool, has_mount: bool) -> str:
+    """Pick the OS/filesystem restriction line for the `run_code` description.
 
-    When the agent configured host-backed OS access (`CodeMode(os=...)` or
-    `mount=...`), the static "no wall-clock" restriction is replaced with a note
-    that filesystem/clock operations route to the host.
+    `os` routes environment, clock, and filesystem calls; a `mount` alone only
+    exposes filesystem paths, so a mount-only sandbox must not advertise env or
+    clock access (the model would generate calls that fail and burn retries).
     """
-    restriction = _OS_ENABLED_NOTE if os_enabled else _NO_OS_RESTRICTION
+    if has_os:
+        return _OS_ENABLED_NOTE
+    if has_mount:
+        return _MOUNT_ONLY_NOTE
+    return _NO_OS_RESTRICTION
+
+
+def _base_description(*, has_os: bool, has_mount: bool) -> str:
+    """Assemble the `run_code` base description with the right OS-access line."""
+    restriction = _os_access_restriction(has_os=has_os, has_mount=has_mount)
     return f'{_RUN_CODE_DESCRIPTION_HEAD}\n{restriction}\n{_RUN_CODE_DESCRIPTION_TAIL}'
 
 
@@ -285,8 +301,9 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
 
         callable_defs, sanitized_to_original = self._partition_callable_tools(sandboxed_tools)
 
-        os_enabled = self.os is not None or self.mount is not None
-        description = self._build_description(callable_defs, os_enabled=os_enabled)
+        description = self._build_description(
+            callable_defs, has_os=self.os is not None, has_mount=self.mount is not None
+        )
 
         if _RUN_CODE_TOOL_NAME in native_tools:
             raise UserError(
@@ -556,9 +573,9 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
         return callable_defs, sanitized_to_original
 
     @staticmethod
-    def _build_description(callable_defs: dict[str, ToolDefinition], *, os_enabled: bool) -> str:
+    def _build_description(callable_defs: dict[str, ToolDefinition], *, has_os: bool, has_mount: bool) -> str:
         """Render the `run_code` description: base prose + TypedDicts + function signatures."""
-        base = _base_description(os_enabled=os_enabled)
+        base = _base_description(has_os=has_os, has_mount=has_mount)
         if not callable_defs:
             return base
 

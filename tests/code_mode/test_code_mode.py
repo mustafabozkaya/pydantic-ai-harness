@@ -1881,15 +1881,20 @@ class TestCodeModeOSAccess:
         assert 'Host-backed OS access' in description
         assert 'No wall-clock or timing primitives' not in description
 
-    async def test_description_with_mount_notes_host_access(self, tmp_path: Any) -> None:
-        """A `mount` (without `os`) also enables the host-access note."""
+    async def test_description_mount_only_advertises_filesystem_not_env_or_clock(self, tmp_path: Any) -> None:
+        """A `mount` without `os` advertises filesystem access only -- it must not tell the model
+        that env/clock are host-backed, since a mount cannot route `os.getenv`/`datetime.now()`."""
         wrapper = CodeMode[None](mount=MountDir('/work', str(tmp_path))).get_wrapper_toolset(
             _build_function_toolset(add)
         )
         assert isinstance(wrapper, CodeModeToolset)
         description = (await wrapper.get_tools(build_run_context(None)))['run_code'].tool_def.description
         assert description is not None
-        assert 'Host-backed OS access' in description
+        assert 'Mounted filesystem access' in description
+        assert 'Host-backed OS access' not in description
+        # env/clock are explicitly called out as still unavailable, not advertised as routed.
+        assert '`os.getenv`/`os.environ`, `datetime.datetime.now()`, `datetime.date.today()`' in description
+        assert 'remain unavailable' in description
 
     async def test_description_host_access_note_shows_with_no_sandboxed_tools(self) -> None:
         """The host-access note appears even when no tools are sandboxed (base description)."""

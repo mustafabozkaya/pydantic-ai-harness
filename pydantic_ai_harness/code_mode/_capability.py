@@ -35,9 +35,9 @@ class CodeMode(AbstractCapability[AgentDepsT]):
     agent = Agent('openai:gpt-5', capabilities=[CodeMode(tools=['search', 'fetch'])])
     ```
 
-    Pass `os` (and/or `mount`) to give sandboxed code host-backed filesystem and
-    OS access -- without it, `pathlib`/`os` I/O and `datetime.now()` are
-    unavailable inside `run_code`:
+    Pass `mount` for host filesystem access and/or `os` for environment/clock
+    (plus filesystem) access -- without them, `pathlib`/`os` I/O and
+    `datetime.now()` are unavailable inside `run_code`:
 
     ```python
     from pydantic_monty import MountDir
