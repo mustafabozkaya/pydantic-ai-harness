@@ -167,9 +167,9 @@ CodeMode(os=my_os)
 ```
 
 `os` takes a `pydantic_monty.AbstractOS` or that callback; `mount` takes one or more `MountDir`.
-Scope access per request with a stateful `AbstractOS` (e.g. rooted at a per-user directory). When
-set, `run_code`'s description tells the model these operations are host-backed; `asyncio.sleep` and
-`time` stay unavailable.
+`os`/`mount` are fixed when the capability is built, so construct `CodeMode` per request to scope
+access. When set, `run_code`'s description tells the model these operations are host-backed;
+`asyncio.sleep` and `time` stay unavailable.
 
 > Monty-specific: these hooks use Monty's `AbstractOS`/`MountDir` types.
 

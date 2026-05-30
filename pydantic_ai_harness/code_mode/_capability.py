@@ -64,8 +64,8 @@ class CodeMode(AbstractCapability[AgentDepsT]):
     Pass a `pydantic_monty.AbstractOS` instance or a raw Monty OS callback
     `(function_name, args, kwargs) -> result`. When set, `pathlib.Path`, `os`,
     `datetime.datetime.now()`, and `datetime.date.today()` calls inside `run_code`
-    are routed to it instead of being unavailable. Scope it per request by giving
-    a stateful `AbstractOS` (e.g. one rooted at a per-user directory).
+    are routed to it instead of being unavailable. Fixed at construction, so build
+    `CodeMode` per request to scope access per request.
     """
 
     mount: MontyMount | None = None
