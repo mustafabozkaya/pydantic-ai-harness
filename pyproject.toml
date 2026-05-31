@@ -28,6 +28,7 @@ classifiers = [
     'Typing :: Typed',
 ]
 dependencies = [
+    "aiosqlite>=0.22.1",
     'pydantic-ai-slim>=1.95.1',
 ]
 

@@ -4,8 +4,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .code_mode import CodeMode
+    from .memory import MemoryCapability
 
-__all__ = ['CodeMode']
+__all__ = ['CodeMode', 'MemoryCapability']
 
 
 def __getattr__(name: str) -> object:
@@ -13,4 +14,8 @@ def __getattr__(name: str) -> object:
         from .code_mode import CodeMode
 
         return CodeMode
+    if name == 'MemoryCapability':
+        from .memory import MemoryCapability
+
+        return MemoryCapability
     raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
